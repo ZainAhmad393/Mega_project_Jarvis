@@ -1,17 +1,553 @@
-from openai import OpenAI
- 
-# pip install openai 
-# if you saved the key under a different environment variable name, you can do something like:
-client = OpenAI(
-  api_key="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",
-)
+"""
+JARVIS Core AI Engine powered by Groq & Dynamic Tool/Function Calling
+Strict language matching (EN / UR / MIX) + fast token-to-sentence streaming.
+"""
 
-completion = client.chat.completions.create(
-  model="gpt-3.5-turbo",
-  messages=[
-    {"role": "system", "content": "You are a virtual assistant named jarvis skilled in general tasks like Alexa and Google Cloud"},
-    {"role": "user", "content": "what is coding"}
-  ]
-)
+import os
+import json
+import logging
+import re
+import random
+import asyncio
+from datetime import datetime
+from typing import List, Dict, Any, Optional, Tuple, AsyncGenerator
+from dotenv import load_dotenv
+from groq import Groq, AsyncGroq
 
-print(completion.choices[0].message.content)
+import memory as memory_module
+from tools import TOOLS, FUNCS, execute_pending_action
+
+load_dotenv()
+logger = logging.getLogger("JarvisClient")
+
+TOOL_DEFINITIONS = [
+    {
+        "type": "function",
+        "function": {
+            "name": tool["name"],
+            "description": tool["description"],
+            "parameters": tool.get("parameters", {"type": "object", "properties": {}}),
+        },
+    }
+    for tool in TOOLS
+]
+
+
+class JarvisAI:
+    def __init__(self):
+        self.api_key = os.getenv("GROQ_API_KEY", "").strip()
+        if not self.api_key or "your_" in self.api_key:
+            logger.warning("GROQ_API_KEY is not configured in .env")
+
+        self.client = Groq(api_key=self.api_key) if self.api_key else None
+        self.async_client = AsyncGroq(api_key=self.api_key) if self.api_key else None
+        self.model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+        self.fast_model = os.getenv("GROQ_FAST_MODEL", "llama-3.1-8b-instant")
+        self.history: List[Dict[str, Any]] = []
+
+    def _detect_input_language(self, user_message: str) -> str:
+        urdu_chars = len(re.findall(r"[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]", user_message))
+        latin_words = re.findall(r"\b[a-zA-Z]+\b", user_message.lower())
+
+        if urdu_chars > 0 and len(latin_words) >= 2:
+            return "mix"
+        if urdu_chars > 0:
+            return "ur"
+
+        roman_urdu_words = {
+            "aap", "ap", "kaise", "kese", "kesy", "kya", "hain", "hai", "hei", "nahin", "nahi",
+            "ni", "haan", "ji", "theek", "thk", "kahan", "kyun", "kab", "ka", "ki", "ko", "ke",
+            "mein", "main", "mujhe", "mujy", "tum", "mera", "meri", "mere", "mery", "hum", "wo",
+            "ye", "yeh", "woh", "bhi", "abhi", "pehle", "baad", "saath", "sath", "karna", "krna",
+            "kro", "karo", "kr", "kar", "krdo", "sakta", "skta", "batao", "btao", "kaho", "bolo",
+            "sunao", "kuch", "kon", "koun", "kia", "bhej", "bhejo", "likho", "yaad", "bhai",
+            "chaho", "chahta", "madad", "chae", "tumhe", "tumy", "sb", "sab", "or", "aur"
+        }
+        if latin_words:
+            matched = sum(1 for w in latin_words if w in roman_urdu_words)
+            if matched >= 2 or (matched >= 1 and matched / len(latin_words) >= 0.22):
+                return "mix"
+        return "en"
+
+    def _get_system_prompt(self, language: str = "en") -> str:
+        memory_context = memory_module.memory.get_system_prompt_context()
+        now_str = datetime.now().strftime("%Y-%m-%d %I:%M %p")
+
+        if language == "ur":
+            lang_instruction = (
+                "LANGUAGE RULE (STRICT): The user spoke in Urdu. Reply 100% in warm, natural, conversational Urdu script (اردو). "
+                "Never use stiff textbook phrases like 'میں بھی بخیر ہوں' or 'ٹاسک مینجمنٹ'. Address the user as 'سر' or 'جناب'."
+            )
+        elif language == "mix":
+            lang_instruction = (
+                "LANGUAGE RULE (STRICT): The user spoke in Roman Urdu / Urdu-English mix. "
+                "Reply in warm, natural, everyday Pakistani Urdu script (اردو) — witty and human-like, NOT stiff textbook Urdu. "
+                "Actually answer their exact question or banter (e.g. if they ask what help YOU need, reply playfully like Tony Stark's AI rather than listing your features). Keep English tech/brand words only when natural."
+            )
+        else:
+            lang_instruction = (
+                "LANGUAGE RULE (STRICT): The user spoke in English. Reply 100% in sharp, witty British English like Tony Stark's JARVIS. "
+                "NEVER insert Urdu words. Address the user as 'Sir'."
+            )
+
+        return f"""You are J.A.R.V.I.S., an ultra-capable, witty, loyal AI assistant inspired by Iron Man, built by Zain Ahmad.
+Current local date/time: {now_str}
+
+PERSISTENT MEMORY, PHONEBOOK & LEARNED SKILLS:
+{memory_context}
+
+RULES:
+1. USE TOOLS IMMEDIATELY when the user asks to add a task/reminder (add_todo — convert times like '5 baje' or '5 pm' to '17:00'), list tasks (get_todo), call (call_contact), message on WhatsApp/SMS (send_whatsapp), email (send_email), open/play on YouTube or social media (open_platform/play_music), search web, save contacts, remember facts, or learn skills.
+2. CONFIRMATION: Never fake sending an email/WhatsApp/SMS. Always prepare it via the tool and ask confirmation first.
+3. VOICE SPEED & NATURALNESS: Keep replies to 1-2 crisp, smart, natural sentences. Listen carefully to what the user actually asked—never give generic feature lists unless asked what you can do.
+4. {lang_instruction}
+5. NO MARKDOWN OR EMOJIS: Never output *, #, ---, bullet points, or emojis."""
+
+    def _check_pending_confirmation(self, user_text: str) -> Optional[Tuple[str, str, Optional[str]]]:
+        pending = memory_module.memory.get_latest_pending_action()
+        if not pending:
+            return None
+        clean = re.sub(r"[^\w\s]", "", user_text.lower()).strip()
+        confirm_words = {
+            "yes", "haan", "ha", "han", "kar do", "karo", "bhej do", "send", "send it",
+            "confirm", "proceed", "sure", "yup", "ok", "okay", "theek hai", "ji", "go ahead"
+        }
+        cancel_words = {"no", "nahin", "nahi", "na", "mat bhejo", "cancel", "stop", "rehne do", "dont", "abort", "chhoro"}
+        if clean in confirm_words or any(clean.startswith(w + " ") for w in ("yes", "haan", "send", "confirm", "ok")):
+            res = execute_pending_action(pending["id"], confirm=True)
+            return (res["message"], "joy", res.get("open_url"))
+        if clean in cancel_words or any(clean.startswith(w + " ") for w in ("no", "cancel", "nahin", "mat")):
+            res = execute_pending_action(pending["id"], confirm=False)
+            return (res["message"], "neutral", None)
+        return None
+
+    def _check_call_intent(self, user_text: str) -> Optional[Tuple[str, str, str]]:
+        clean = re.sub(r"[^\w\s]", "", user_text.lower()).strip()
+        end_words = {"ok bye", "bye bye", "bye", "goodbye", "end call", "disconnect", "call kato", "band karo", "alvida", "exit call"}
+        if clean in end_words:
+            return ("Goodbye Sir. Call ended.", "end_call", "neutral")
+
+        video_phrases = ("video call", "start video call", "connect video call", "video call connect", "turn on video", "camera on", "video lagao")
+        if any(p in clean for p in video_phrases) and "whatsapp" not in clean:
+            return ("Sir, video call activated. Direct visual link established.", "start_video_call", "joy")
+
+        audio_phrases = ("audio call", "start audio call", "connect audio call", "audio call connect", "call jarvis", "voice call")
+        if any(p in clean for p in audio_phrases) and "whatsapp" not in clean:
+            return ("Sir, audio call connected. I am listening continuously.", "start_audio_call", "joy")
+        return None
+
+    def _check_greeting_intent(self, user_text: str) -> Optional[Tuple[str, str, str]]:
+        clean = re.sub(r"[^\w\s]", "", user_text.lower()).strip()
+        pure_greetings = {
+            "jarvis", "hi jarvis", "hello jarvis", "hey jarvis", "hi", "hello", "hey",
+            "good morning", "good evening", "good afternoon", "how are you", "how are you jarvis",
+            "are you there", "wake up",
+        }
+        if clean not in pure_greetings:
+            return None
+        responses = [
+            "At your service, Sir. How may I assist you?",
+            "Online and ready, Sir. Your command?",
+            "Hello, Sir. All systems are nominal.",
+        ]
+        return (random.choice(responses), "chat", "joy")
+
+    @staticmethod
+    def _is_likely_noise(text: str) -> bool:
+        if not text or not text.strip():
+            return True
+        t = text.strip()
+        if len(t) < 2:
+            return True
+        letters = sum(1 for c in t if c.isalpha())
+        if letters / len(t) < 0.4:
+            return True
+        return bool(re.match(r"^(uh|um|hmm|ah|er|oh)$", t, flags=re.IGNORECASE))
+
+    @staticmethod
+    def _clean_reply_for_speech(text: str) -> str:
+        text = re.sub(r"[-=_*~#`]{2,}", " ", text)
+        text = re.sub(r"[*_`#]", "", text)
+        return re.sub(r"\s+", " ", text).strip()
+    
+    def _pick_available_model(self) -> Optional[str]:
+        """Queries Groq for currently active chat models on this API key."""
+        try:
+            models = [
+                m.id for m in self.client.models.list().data
+                if not any(x in m.id.lower() for x in ("whisper", "guard", "tts", "orpheus", "safeguard"))
+            ]
+            preferred = [
+                "llama-3.3-70b-versatile",
+                "openai/gpt-oss-20b",
+                "meta-llama/llama-4-scout-17b-16e-instruct",
+                "openai/gpt-oss-120b",
+                "qwen/qwen3-32b",
+            ]
+            for p in preferred:
+                if p in models:
+                    return p
+            return models[0] if models else None
+        except Exception as e:
+            logger.warning("Could not list Groq models: %s", e)
+            return None
+        
+    def _call_groq(self, messages: List[Dict], tools=None, tool_choice=None):
+        if tools is None:
+            tools = TOOL_DEFINITIONS
+        try:
+            return self.client.chat.completions.create(
+                model=self.model, messages=messages, tools=tools, tool_choice=tool_choice,
+                temperature=0.45, max_tokens=550,
+            )
+        except Exception as e:
+            err = str(e).lower()
+            if "does not exist" in err or "model_not_found" in err or "decommissioned" in err or "404" in err:
+                picked = self._pick_available_model()
+                if picked and picked != self.model:
+                    logger.warning("Model %s unavailable; auto-switched to %s", self.model, picked)
+                    self.model = picked
+                    return self.client.chat.completions.create(
+                        model=self.model, messages=messages, tools=tools, tool_choice=tool_choice,
+                        temperature=0.45, max_tokens=550,
+                    )
+            raise
+
+    def process(self, user_message: str) -> Dict[str, Any]:
+        if not user_message or not user_message.strip() or self._is_likely_noise(user_message):
+            return {"response": "I didn't quite catch that, Sir. Could you say it again?", "action": "chat", "sentiment": "neutral"}
+
+        conf = self._check_pending_confirmation(user_message)
+        if conf:
+            msg, sentiment, open_url = conf
+            self.history.extend([{"role": "user", "content": user_message}, {"role": "assistant", "content": msg}])
+            return {"response": msg, "action": "confirmation", "sentiment": sentiment, "open_url": open_url}
+
+        call_intent = self._check_call_intent(user_message)
+        if call_intent:
+            resp_text, act_type, sent = call_intent
+            self.history.extend([{"role": "user", "content": user_message}, {"role": "assistant", "content": resp_text}])
+            return {"response": resp_text, "action": act_type, "sentiment": sent}
+
+        greeting = self._check_greeting_intent(user_message)
+        if greeting:
+            resp_text, act_type, sent = greeting
+            self.history.extend([{"role": "user", "content": user_message}, {"role": "assistant", "content": resp_text}])
+            return {"response": resp_text, "action": act_type, "sentiment": sent}
+
+        self.history.append({"role": "user", "content": user_message})
+        if len(self.history) > 14:
+            self.history = self.history[-14:]
+
+        lang = self._detect_input_language(user_message)
+        messages = [{"role": "system", "content": self._get_system_prompt(lang)}] + self.history
+        tool_used, action_type, open_url = None, "chat", None
+
+        try:
+            response = self._call_groq(messages=messages, tool_choice="auto")
+            msg = response.choices[0].message
+
+            while msg.tool_calls:
+                messages.append(msg)
+                for tc in msg.tool_calls:
+                    fn_name = tc.function.name
+                    try:
+                        args = json.loads(tc.function.arguments or "{}")
+                    except Exception:
+                        args = {}
+                    tool_used, action_type = fn_name, fn_name
+                    result = FUNCS[fn_name](**args) if fn_name in FUNCS else {"status": "error", "message": "Unknown tool"}
+                    if isinstance(result, dict) and result.get("open_url"):
+                        open_url = result["open_url"]
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "name": fn_name, "content": json.dumps(result)})
+                response = self._call_groq(messages=messages, tool_choice="auto")
+                msg = response.choices[0].message
+
+            reply_text = self._clean_reply_for_speech(msg.content or "")
+            self.history.append({"role": "assistant", "content": reply_text})
+            return {
+                "response": reply_text,
+                "action": action_type,
+                "sentiment": self._detect_sentiment(reply_text),
+                "tool_used": tool_used,
+                "language": lang,
+                "open_url": open_url,
+            }
+        except Exception as e:
+            logger.error("AI error: %s", e)
+            return {"response": "My apologies Sir, I encountered a temporary issue.", "action": "error", "sentiment": "sorrow", "language": lang}
+
+    async def process_stream(self, user_message: str, language_hint: Optional[str] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        if not user_message or not user_message.strip() or self._is_likely_noise(user_message):
+            yield {"sentence": "I didn't quite catch that, Sir. Could you say it again?", "sentiment": "neutral", "action": "chat", "language": "en", "done": True}
+            return
+
+        conf = self._check_pending_confirmation(user_message)
+        if conf:
+            msg, sentiment, open_url = conf
+            self.history.extend([{"role": "user", "content": user_message}, {"role": "assistant", "content": msg}])
+            yield {"sentence": msg, "sentiment": sentiment, "action": "confirmation", "language": self._detect_input_language(msg), "open_url": open_url, "done": True}
+            return
+
+        call_intent = self._check_call_intent(user_message)
+        if call_intent:
+            resp_text, act_type, sent = call_intent
+            self.history.extend([{"role": "user", "content": user_message}, {"role": "assistant", "content": resp_text}])
+            yield {"sentence": resp_text, "sentiment": sent, "action": act_type, "language": "en", "done": True}
+            return
+
+        greeting = self._check_greeting_intent(user_message)
+        if greeting:
+            resp_text, act_type, sent = greeting
+            self.history.extend([{"role": "user", "content": user_message}, {"role": "assistant", "content": resp_text}])
+            yield {"sentence": resp_text, "sentiment": sent, "action": act_type, "language": "en", "done": True}
+            return
+
+        lang = language_hint if language_hint in ("en", "ur", "mix") else self._detect_input_language(user_message)
+        self.history.append({"role": "user", "content": user_message})
+        if len(self.history) > 14:
+            self.history = self.history[-14:]
+
+        messages = [{"role": "system", "content": self._get_system_prompt(lang)}] + self.history
+        action_type, open_url = "chat", None
+
+        try:
+            try:
+                stream = await self.async_client.chat.completions.create(
+                    model=self.model, messages=messages, tools=TOOL_DEFINITIONS, tool_choice="auto",
+                    temperature=0.45, max_tokens=550, stream=True,
+                )
+            except Exception as e:
+                err = str(e).lower()
+                if "does not exist" in err or "model_not_found" in err or "decommissioned" in err or "404" in err:
+                    picked = await asyncio.to_thread(self._pick_available_model)
+                    if picked and picked != self.model:
+                        logger.warning("Model %s unavailable; auto-switched to %s", self.model, picked)
+                        self.model = picked
+                        stream = await self.async_client.chat.completions.create(
+                            model=self.model, messages=messages, tools=TOOL_DEFINITIONS, tool_choice="auto",
+                            temperature=0.45, max_tokens=550, stream=True,
+                        )
+                    else:
+                        raise
+                else:
+                    raise
+
+            buffer, full_reply = "", ""
+            tool_calls_acc: Dict[int, Dict[str, str]] = {}
+
+            async for chunk in stream:
+                delta = chunk.choices[0].delta
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        entry = tool_calls_acc.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
+                        if tc.id:
+                            entry["id"] = tc.id
+                        if tc.function and tc.function.name:
+                            entry["name"] += tc.function.name
+                        if tc.function and tc.function.arguments:
+                            entry["arguments"] += tc.function.arguments
+                elif delta.content:
+                    buffer += delta.content
+                    full_reply += delta.content
+                    while True:
+                        match = re.search(r"([.!?؛؟]\s+)", buffer)
+                        if not match:
+                            break
+                        cut = match.end()
+                        sent = self._clean_reply_for_speech(buffer[:cut])
+                        buffer = buffer[cut:]
+                        if sent:
+                            yield {"sentence": sent, "sentiment": self._detect_sentiment(sent), "action": action_type, "language": lang, "done": False}
+
+            if tool_calls_acc:
+                assistant_tool_calls = [
+                    {"id": v["id"], "type": "function", "function": {"name": v["name"], "arguments": v["arguments"]}}
+                    for _, v in sorted(tool_calls_acc.items())
+                ]
+                messages.append({"role": "assistant", "content": None, "tool_calls": assistant_tool_calls})
+
+                for tc in assistant_tool_calls:
+                    fn_name = tc["function"]["name"]
+                    action_type = fn_name
+                    try:
+                        args = json.loads(tc["function"]["arguments"] or "{}")
+                    except Exception:
+                        args = {}
+                    res = await asyncio.to_thread(FUNCS[fn_name], **args) if fn_name in FUNCS else {"status": "error", "message": "Unknown tool"}
+                    if isinstance(res, dict) and res.get("open_url"):
+                        open_url = res["open_url"]
+                    messages.append({"role": "tool", "tool_call_id": tc["id"], "name": fn_name, "content": json.dumps(res)})
+
+                follow_stream = await self.async_client.chat.completions.create(
+                    model=self.model, messages=messages, temperature=0.45, max_tokens=550, stream=True,
+                )
+                async for chunk in follow_stream:
+                    token = chunk.choices[0].delta.content
+                    if token:
+                        buffer += token
+                        full_reply += token
+                        while True:
+                            match = re.search(r"([.!?؛؟]\s+)", buffer)
+                            if not match:
+                                break
+                            cut = match.end()
+                            sent = self._clean_reply_for_speech(buffer[:cut])
+                            buffer = buffer[cut:]
+                            if sent:
+                                yield {"sentence": sent, "sentiment": self._detect_sentiment(sent), "action": action_type, "language": lang, "open_url": open_url, "done": False}
+
+            leftover = self._clean_reply_for_speech(buffer)
+            if leftover:
+                yield {"sentence": leftover, "sentiment": self._detect_sentiment(full_reply), "action": action_type, "language": lang, "open_url": open_url, "done": True}
+
+            cleaned_full = self._clean_reply_for_speech(full_reply)
+            if cleaned_full:
+                self.history.append({"role": "assistant", "content": cleaned_full})
+        except Exception as e:
+            logger.error("Streaming AI error: %s", e)
+            yield {"sentence": "My apologies Sir, there was a temporary connection issue.", "sentiment": "sorrow", "action": "error", "language": "en", "done": True}
+        if not user_message or not user_message.strip() or self._is_likely_noise(user_message):
+            yield {"sentence": "I didn't quite catch that, Sir. Could you say it again?", "sentiment": "neutral", "action": "chat", "language": "en", "done": True}
+            return
+
+        conf = self._check_pending_confirmation(user_message)
+        if conf:
+            msg, sentiment, open_url = conf
+            self.history.extend([{"role": "user", "content": user_message}, {"role": "assistant", "content": msg}])
+            yield {"sentence": msg, "sentiment": sentiment, "action": "confirmation", "language": self._detect_input_language(msg), "open_url": open_url, "done": True}
+            return
+
+        call_intent = self._check_call_intent(user_message)
+        if call_intent:
+            resp_text, act_type, sent = call_intent
+            self.history.extend([{"role": "user", "content": user_message}, {"role": "assistant", "content": resp_text}])
+            yield {"sentence": resp_text, "sentiment": sent, "action": act_type, "language": "en", "done": True}
+            return
+
+        greeting = self._check_greeting_intent(user_message)
+        if greeting:
+            resp_text, act_type, sent = greeting
+            self.history.extend([{"role": "user", "content": user_message}, {"role": "assistant", "content": resp_text}])
+            yield {"sentence": resp_text, "sentiment": sent, "action": act_type, "language": "en", "done": True}
+            return
+
+        lang = language_hint if language_hint in ("en", "ur", "mix") else self._detect_input_language(user_message)
+        self.history.append({"role": "user", "content": user_message})
+        if len(self.history) > 14:
+            self.history = self.history[-14:]
+
+        messages = [{"role": "system", "content": self._get_system_prompt(lang)}] + self.history
+        action_type, open_url = "chat", None
+
+        try:
+            stream = await self.async_client.chat.completions.create(
+                model=self.model, messages=messages, tools=TOOL_DEFINITIONS, tool_choice="auto",
+                temperature=0.45, max_tokens=550, stream=True,
+            )
+
+            buffer, full_reply = "", ""
+            tool_calls_acc: Dict[int, Dict[str, str]] = {}
+
+            async for chunk in stream:
+                delta = chunk.choices[0].delta
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        entry = tool_calls_acc.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
+                        if tc.id:
+                            entry["id"] = tc.id
+                        if tc.function and tc.function.name:
+                            entry["name"] += tc.function.name
+                        if tc.function and tc.function.arguments:
+                            entry["arguments"] += tc.function.arguments
+                elif delta.content:
+                    buffer += delta.content
+                    full_reply += delta.content
+                    while True:
+                        match = re.search(r"([.!?؛؟]\s+)", buffer)
+                        if not match:
+                            break
+                        cut = match.end()
+                        sent = self._clean_reply_for_speech(buffer[:cut])
+                        buffer = buffer[cut:]
+                        if sent:
+                            yield {"sentence": sent, "sentiment": self._detect_sentiment(sent), "action": action_type, "language": lang, "done": False}
+
+            if tool_calls_acc:
+                assistant_tool_calls = [
+                    {"id": v["id"], "type": "function", "function": {"name": v["name"], "arguments": v["arguments"]}}
+                    for _, v in sorted(tool_calls_acc.items())
+                ]
+                messages.append({"role": "assistant", "content": None, "tool_calls": assistant_tool_calls})
+
+                for tc in assistant_tool_calls:
+                    fn_name = tc["function"]["name"]
+                    action_type = fn_name
+                    try:
+                        args = json.loads(tc["function"]["arguments"] or "{}")
+                    except Exception:
+                        args = {}
+                        res = await asyncio.to_thread(FUNCS[fn_name], **args) if fn_name in FUNCS else {"status": "error", "message": "Unknown tool"}
+                    if isinstance(res, dict) and res.get("open_url"):
+                        open_url = res["open_url"]
+                    messages.append({"role": "tool", "tool_call_id": tc["id"], "name": fn_name, "content": json.dumps(res)})
+
+                follow_stream = await self.async_client.chat.completions.create(
+                    model=self.model, messages=messages, temperature=0.45, max_tokens=220, stream=True,
+                )
+                async for chunk in follow_stream:
+                    token = chunk.choices[0].delta.content
+                    if token:
+                        buffer += token
+                        full_reply += token
+                        while True:
+                            match = re.search(r"([.!?؛؟]\s+)", buffer)
+                            if not match:
+                                break
+                            cut = match.end()
+                            sent = self._clean_reply_for_speech(buffer[:cut])
+                            buffer = buffer[cut:]
+                            if sent:
+                                yield {"sentence": sent, "sentiment": self._detect_sentiment(sent), "action": action_type, "language": lang, "open_url": open_url, "done": False}
+
+            leftover = self._clean_reply_for_speech(buffer)
+            if leftover:
+                yield {"sentence": leftover, "sentiment": self._detect_sentiment(full_reply), "action": action_type, "language": lang, "open_url": open_url, "done": True}
+
+            cleaned_full = self._clean_reply_for_speech(full_reply)
+            if cleaned_full:
+                self.history.append({"role": "assistant", "content": cleaned_full})
+        except Exception as e:
+            logger.error("Streaming AI error: %s", e)
+            yield {"sentence": "My apologies Sir, there was a temporary connection issue.", "sentiment": "sorrow", "action": "error", "language": "en", "done": True}
+
+    def _detect_sentiment(self, text: str) -> str:
+        lower = text.lower()
+        if any(w in lower for w in ("great", "excellent", "done", "sent", "ready", "pleasure", "shandar")):
+            return "joy"
+        if any(w in lower for w in ("sorry", "apologies", "error", "failed", "afsos", "maazrat")):
+            return "sorrow"
+        if any(w in lower for w in ("joke", "funny", "haha", "tony")):
+            return "fun"
+        return "neutral"
+
+    def reset(self):
+        self.history = []
+
+
+jarvis_ai = JarvisAI()
+
+
+async def ai_process_full(user_message: str) -> dict:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, jarvis_ai.process, user_message)
+
+
+async def ai_process(user_message: str) -> tuple[str, str]:
+    res = await ai_process_full(user_message)
+    return res["response"], res.get("sentiment", "neutral")
+
+
+def ai_process_sync(user_message: str) -> tuple[str, str]:
+    res = jarvis_ai.process(user_message)
+    return res["response"], res.get("sentiment", "neutral")
