@@ -1021,6 +1021,16 @@
   initRecognition();
   initWebSocket();
   animate();
+  // Auto-enable "Hi Jarvis" listening when opened with ?wake=1 (or from Assistant shortcut)
+  if (new URLSearchParams(location.search).get('wake') === '1') {
+    wakeEnabled = true;
+    btnWake.classList.add('active');
+    btnWake.innerText = '🎙️ Hi Jarvis: ON';
+    setTimeout(() => {
+      ensureAudioUnlocked();
+      startRecognition();
+    }, 600);
+  }
 </script>
 </body>
 </html>

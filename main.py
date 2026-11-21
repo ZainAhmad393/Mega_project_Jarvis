@@ -1,103 +1,181 @@
-import speech_recognition as sr
-import pyttsx3  
-import pygame
 import os
-from gtts import gTTS
-import musicLibrary 
-import requests
+import sys
+import time
+import re
+import signal
+import base64
+import threading
 import webbrowser
-from openai import OpenAI
+import socket
+import logging
+from dotenv import load_dotenv
+import uvicorn
+from colorama import Fore, Style, init
 
-recognizer = sr.Recognizer()
-engine = pyttsx3.init()
-pygame.mixer.init()
-newsapi = "732672f8b79047cfb5868dcad7dfd835"
-def speak_old(text):
-    engine.say(text)
-    engine.runAndWait()
+load_dotenv()
+init(autoreset=True)
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("JarvisMain")
 
-def speak(text):
-    tts = gTTS(text)
-    tts.save('temp.mp3') 
-    pygame.mixer.music.load('temp.mp3')
-    pygame.mixer.music.play()
-    while pygame.mixer.music.get_busy():
-        pygame.time.Clock().tick(10)
-    pygame.mixer.music.unload()
-    os.remove("temp.mp3") 
-
-def processCommand(c):
-    if "open google" in c.lower():
-        webbrowser.open("https://google.com")
-        # return "Opening Google...."
-    elif "open facebook" in c.lower():
-        webbrowser.open("https://facebook.com")
-        # return "Opening Facebook"
-    elif "open youtube" in c.lower():
-        webbrowser.open("https://youtube.com")
-        # return "Opening Youtube"
-    elif "open linkedin" in c.lower():
-        webbrowser.open("https://linkedin.com")
-        # return "Opening Linkedin"
-    elif "open instagram" in c.lower():
-        webbrowser.open("www.instagram.com")
-    elif "open w3school" in c.lower():
-        webbrowser.open("www.w3school.com")
-    elif "open vulms" in c.lower():
-        webbrowser.open("https://vulms.vu.edu.pk")
-        # return "Opening VULMS"
-    elif "open digiskill" in c.lower():
-        webbrowser.open("https://lms.digiskills.pk/Login.aspx")
-    elif "open hunarmandpunjab" in c.lower():
-        webbrowser.open("https://hunarmandpunjab.pk/login")
-        # return "Opening HunarmandPunjab"
-    elif c.lower().startswith("play"):
-        song = c.lower().split(" ")[1]
-        link = musicLibrary.music[song]
-        webbrowser.open(link)
-    elif "news" in c.lower():
-        r = requests.get(f"https://newsapi.org/v2/top-headlines?country=in&apiKey={newsapi}")
-        if r.status_code == 200:
-            data = r.json()
-            articles = data.get("articles", [])
-            for article in articles[:5]:
-                speak(article["title"])
-    
-    else:
-        output = aiProcess(c)
-        speak(output)
-    
+HOST = os.getenv("HOST") or os.getenv("SERVER_HOST", "0.0.0.0")
+DEFAULT_PORT = int(os.getenv("PORT") or os.getenv("SERVER_PORT", 8000))
+WAKE_WORD_ENABLED = os.getenv("WAKE_WORD_ENABLED", "false").lower() in ("true", "1", "yes")
 
 
-def aiProcess(command):
-    client = OpenAI(api_key="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")
-    completion = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": "You are a virtual assistant named jarvis..."},
-            {"role": "user", "content": command}
-        ]
+def find_available_port(start_port: int, max_attempts: int = 15) -> int:
+    for port in range(start_port, start_port + max_attempts):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind((HOST, port))
+                return port
+            except OSError:
+                continue
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind((HOST, 0))
+        return s.getsockname()[1]
+
+
+def get_lan_ip() -> str:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+
+
+PORT = find_available_port(DEFAULT_PORT)
+_shutdown_event = threading.Event()
+
+
+def _handle_shutdown(signum, frame):
+    logger.info("Shutdown signal received. Stopping Jarvis gracefully...")
+    _shutdown_event.set()
+
+
+signal.signal(signal.SIGINT, _handle_shutdown)
+signal.signal(signal.SIGTERM, _handle_shutdown)
+
+
+def open_browser(url: str, delay: float = 1.5):
+    def _open():
+        time.sleep(delay)
+        webbrowser.open(url)
+    threading.Thread(target=_open, daemon=True).start()
+
+
+def _is_likely_noise(text: str) -> bool:
+    if not text or not text.strip():
+        return True
+    t = text.strip()
+    if len(t) < 2:
+        return True
+    return bool(re.match(r"^(uh|um|hmm|ah|er|oh)$", t, flags=re.IGNORECASE))
+
+
+def start_wake_word_listener():
+    """Optional PC microphone background wake-word listener ('Hi Jarvis' / 'Jarvis')."""
+    try:
+        import speech_recognition as sr
+        import client as ai_client
+        import voice_service as voice
+        from server import manager, broadcast_from_thread
+
+        recognizer = sr.Recognizer()
+        recognizer.energy_threshold = 300
+        recognizer.dynamic_energy_threshold = True
+        recognizer.pause_threshold = 0.9
+
+        def _listen_loop():
+            try:
+                mic = sr.Microphone()
+            except Exception as e:
+                logger.warning("Microphone unavailable for background wake word: %s", e)
+                return
+
+            with mic as source:
+                recognizer.adjust_for_ambient_noise(source, duration=1.5)
+                logger.info("PC wake word active. Say 'Hi Jarvis' or 'Jarvis'.")
+
+                while not _shutdown_event.is_set():
+                    try:
+                        audio = recognizer.listen(source, timeout=5.0, phrase_time_limit=12.0)
+                        text = voice.transcribe_audio_groq(audio.get_wav_data())
+                        if _is_likely_noise(text):
+                            continue
+
+                        if "jarvis" in text.lower():
+                            command = re.sub(r"\b(hi|hey|hello)?\s*jarvis\b", "", text, flags=re.IGNORECASE).strip()
+                            if not command:
+                                command = "hi jarvis"
+
+                            broadcast_from_thread(manager.set_state("thinking", text=command))
+                            res = ai_client.jarvis_ai.process(command)
+                            reply = res["response"]
+                            sentiment = res.get("sentiment", "neutral")
+
+                            async def _send_reply():
+                                await manager.set_state("speaking", sentiment=sentiment, text=reply)
+                                async for sent, audio_bytes in voice.stream_tts_sentences(reply):
+                                    payload = {
+                                        "type": "audio_sentence",
+                                        "text": sent,
+                                        "audio_base64": base64.b64encode(audio_bytes).decode("utf-8"),
+                                        "sentiment": sentiment,
+                                    }
+                                    await manager.broadcast(payload)
+                                await manager.set_state("idle")
+
+                            broadcast_from_thread(_send_reply())
+                    except sr.WaitTimeoutError:
+                        continue
+                    except Exception as e:
+                        logger.debug("Wake loop note: %s", e)
+                        time.sleep(0.4)
+
+        threading.Thread(target=_listen_loop, daemon=True).start()
+    except ImportError:
+        logger.warning("SpeechRecognition not installed for PC wake-word.")
+
+
+def main():
+    for d in ["data", "temp", "temp/cache", "logs", "face"]:
+        os.makedirs(d, exist_ok=True)
+
+    local_url = f"http://127.0.0.1:{PORT}/face/index.html"
+    lan_ip = get_lan_ip()
+    mobile_url = f"http://{lan_ip}:{PORT}/face/index.html"
+
+    print(f"{Fore.CYAN}● JARVIS Enterprise v2.2 Online{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}● Desktop URL: {Style.BRIGHT}{local_url}{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}● Mobile LAN:  {Style.BRIGHT}{mobile_url}{Style.RESET_ALL}")
+    print(f"{Fore.YELLOW}● Wake Word:   {WAKE_WORD_ENABLED}{Style.RESET_ALL}\n")
+
+    if WAKE_WORD_ENABLED:
+        start_wake_word_listener()
+
+    open_browser(local_url, delay=1.8)
+
+    uvicorn.run(
+        "server:app",
+        host=HOST,
+        port=PORT,
+        log_level="warning",
+        access_log=False,
+        reload=False,
+        loop="asyncio",
     )
-    return completion.choices[0].message.content
+
 
 if __name__ == "__main__":
-    speak("Initializing Jarvis....")
-    while True:
-        r = sr.Recognizer()
-        print("recognizing...")
-        try:
-            with sr.Microphone() as source:
-                print("Listening...")
-                audio = r.listen(source, timeout=2, phrase_time_limit=1)
-            word = r.recognize_google(audio)
-            if(word.lower() == "jarvis"):
-                speak("Hi this is jarvis how can i help you?")
-                with sr.Microphone() as source:
-                    print("Jarvis Active...")
-                    audio = r.listen(source)
-                    command = r.recognize_google(audio)
-                    processCommand(command)
-
-        except Exception as e:
-            print("Error; {0}".format(e))
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n{Fore.CYAN}JARVIS shutdown complete. Goodbye Sir.{Style.RESET_ALL}")
+        sys.exit(0)
