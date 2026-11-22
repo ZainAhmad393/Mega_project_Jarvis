@@ -15,9 +15,9 @@ from typing import List, Dict, Any, Optional, Tuple, AsyncGenerator
 from dotenv import load_dotenv
 from groq import Groq, AsyncGroq
 
-import memory as memory_module
 import tools as tools_module
 from tools import TOOLS, FUNCS, execute_pending_action
+
 load_dotenv()
 logger = logging.getLogger("JarvisClient")
 
@@ -33,7 +33,6 @@ TOOL_DEFINITIONS = [
     for tool in TOOLS
 ]
 
-# Sentence boundary for streaming TTS (includes Urdu full stop U+06D4 and Arabic ? ;)
 _SENTENCE_END = re.compile(r"([.!?؛؟۔]\s+)")
 MAX_HISTORY = 14
 MAX_TOOL_ROUNDS = 3
@@ -47,8 +46,8 @@ class JarvisAI:
 
         self.client = Groq(api_key=self.api_key) if self.api_key else None
         self.async_client = AsyncGroq(api_key=self.api_key) if self.api_key else None
-        self.model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
-        self.fast_model = os.getenv("GROQ_FAST_MODEL", "llama-3.1-8b-instant")
+        self.model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        self.fast_model = os.getenv("GROQ_FAST_MODEL", "llama-3.3-70b-versatile")
         self.vision_model = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
         self.history: List[Dict[str, Any]] = []
 
@@ -69,7 +68,7 @@ class JarvisAI:
             "ye", "yeh", "woh", "bhi", "abhi", "pehle", "baad", "saath", "sath", "karna", "krna",
             "kro", "karo", "kr", "kar", "krdo", "sakta", "skta", "batao", "btao", "kaho", "bolo",
             "sunao", "kuch", "kon", "koun", "kia", "bhej", "bhejo", "likho", "yaad", "bhai",
-            "chaho", "chahta", "madad", "chae", "tumhe", "tumy", "sb", "sab", "or", "aur",
+            "chaho", "chahta", "madad", "chae", "tumhe", "tumy", "sb", "sab", "or", "aur", "mausam",
         }
         if latin_words:
             matched = sum(1 for w in latin_words if w in roman_urdu_words)
@@ -90,7 +89,7 @@ class JarvisAI:
             lang_instruction = (
                 "LANGUAGE RULE (STRICT): The user spoke in Roman Urdu / Urdu-English mix. "
                 "Reply in warm, natural, everyday Pakistani Urdu script (اردو) — witty and human-like, NOT stiff textbook Urdu. "
-                "Actually answer their exact question or banter (e.g. if they ask what help YOU need, reply playfully like Tony Stark's AI rather than listing your features). Keep English tech/brand words only when natural."
+                "Actually answer their exact question or banter naturally."
             )
         else:
             lang_instruction = (
@@ -107,30 +106,30 @@ PERSISTENT MEMORY, PHONEBOOK & LEARNED SKILLS:
 RULES:
 1. USE TOOLS IMMEDIATELY when the user asks to add a task/reminder (add_todo — convert times like '5 baje' or '5 pm' to '17:00'), list tasks (get_todo), call (call_contact), message on WhatsApp/SMS (send_whatsapp), email (send_email), open/play on YouTube or social media (open_platform/play_music), weather (get_weather), daily briefing (morning_briefing), search web, save contacts, remember facts, or learn skills.
 2. CONFIRMATION: Never fake sending an email/WhatsApp/SMS. Always prepare it via the tool and ask confirmation first.
-3. VOICE SPEED & NATURALNESS: Keep replies to 1-2 crisp, smart, natural sentences. Listen carefully to what the user actually asked—never give generic feature lists unless asked what you can do.
+3. COMPLETE & NATURAL ANSWERS: Keep casual chat to 1-2 crisp sentences. When asked about a city, person, history, weather, or facts, give a complete, informative 3-4 sentence answer—never cut off mid-fact.
 4. {lang_instruction}
 5. NO MARKDOWN OR EMOJIS: Never output *, #, ---, bullet points, or emojis."""
 
     # ------------------------------------------------------------------ quick intents (no LLM)
-   def _check_pending_confirmation(self, user_text: str) -> Optional[Tuple[str, str, Optional[str]]]:
-     pending = tools_module.memory.get_latest_pending_action()
-     if not pending:
-         return None
-     clean = re.sub(r"[^\w\s]", "", user_text.lower()).strip()
-     confirm_words = {
-         "yes", "haan", "ha", "han", "kar do", "karo", "bhej do", "send", "send it",
-         "confirm", "proceed", "sure", "yup", "ok", "okay", "theek hai", "ji", "go ahead",
-         "haan send kar do", "ok send", "ok send it", "ok kar do", "ok bhej do",
-     }
-     cancel_words = {"no", "nahin", "nahi", "na", "mat bhejo", "cancel", "stop", "rehne do", "dont", "abort", "chhoro"}
-     if clean in confirm_words or any(clean.startswith(w + " ") for w in ("yes", "haan", "send", "confirm")):
-         res = execute_pending_action(pending["id"], confirm=True)
-         return (res["message"], "joy", res.get("open_url"))
-     if clean in cancel_words or any(clean.startswith(w + " ") for w in ("no", "cancel", "nahin", "mat")):
-         res = execute_pending_action(pending["id"], confirm=False)
-         return (res["message"], "neutral", None)
-     return None
- 
+    def _check_pending_confirmation(self, user_text: str) -> Optional[Tuple[str, str, Optional[str]]]:
+        pending = tools_module.memory.get_latest_pending_action()
+        if not pending:
+            return None
+        clean = re.sub(r"[^\w\s]", "", user_text.lower()).strip()
+        confirm_words = {
+            "yes", "haan", "ha", "han", "kar do", "karo", "bhej do", "send", "send it",
+            "confirm", "proceed", "sure", "yup", "ok", "okay", "theek hai", "ji", "go ahead",
+            "haan send kar do", "ok send", "ok send it", "ok kar do", "ok bhej do",
+        }
+        cancel_words = {"no", "nahin", "nahi", "na", "mat bhejo", "cancel", "stop", "rehne do", "dont", "abort", "chhoro"}
+        if clean in confirm_words or any(clean.startswith(w + " ") for w in ("yes", "haan", "send", "confirm")):
+            res = execute_pending_action(pending["id"], confirm=True)
+            return (res["message"], "joy", res.get("open_url"))
+        if clean in cancel_words or any(clean.startswith(w + " ") for w in ("no", "cancel", "nahin", "mat")):
+            res = execute_pending_action(pending["id"], confirm=False)
+            return (res["message"], "neutral", None)
+        return None
+
     def _check_call_intent(self, user_text: str) -> Optional[Tuple[str, str, str]]:
         clean = re.sub(r"[^\w\s]", "", user_text.lower()).strip()
         end_words = {"ok bye", "bye bye", "bye", "goodbye", "end call", "disconnect", "call kato", "band karo", "alvida", "exit call"}
@@ -163,8 +162,6 @@ RULES:
         return (random.choice(responses), "chat", "joy")
 
     def _quick_intent(self, text: str) -> Optional[Dict[str, Any]]:
-        """Confirmation / call / greeting shortcuts. Blocking (may send email), so
-        async callers must run it in a thread."""
         conf = self._check_pending_confirmation(text)
         if conf:
             msg, sentiment, open_url = conf
@@ -200,7 +197,6 @@ RULES:
         return re.sub(r"\s+", " ", text).strip()
 
     def _pop_sentences(self, buffer: str) -> Tuple[List[str], str]:
-        """Split complete sentences off the front of a streaming buffer."""
         sentences: List[str] = []
         while True:
             match = _SENTENCE_END.search(buffer)
@@ -238,7 +234,6 @@ RULES:
         return any(x in err for x in ("does not exist", "model_not_found", "decommissioned", "404"))
 
     def _pick_available_model(self) -> Optional[str]:
-        """Queries Groq for currently active chat models on this API key."""
         try:
             models = [
                 m.id for m in self.client.models.list().data
@@ -284,7 +279,6 @@ RULES:
         max_tokens: int = 550,
         temperature: float = 0.45,
     ):
-        """Open a streaming completion, auto-switching model if Groq retired it."""
         kwargs: Dict[str, Any] = dict(messages=messages, temperature=temperature, max_tokens=max_tokens, stream=True)
         if use_tools and not vision:
             kwargs.update(tools=TOOL_DEFINITIONS, tool_choice="auto")
@@ -306,7 +300,6 @@ RULES:
             return await self.async_client.chat.completions.create(model=picked, **kwargs)
 
     def _call_groq(self, messages: List[Dict], tools=None, tool_choice=None):
-        """Blocking completion used by the sync process() path."""
         if tools is None:
             tools = TOOL_DEFINITIONS
         params = dict(messages=messages, tools=tools, tool_choice=tool_choice, temperature=0.45, max_tokens=550)
@@ -337,7 +330,6 @@ RULES:
             return {"status": "error", "message": f"{name} failed"}
 
     def _run_tool_calls(self, calls: List[Dict[str, Any]], messages: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
-        """Execute tool calls (blocking), append assistant+tool messages. Returns (last_action, open_url)."""
         if not calls:
             return None, None
         messages.append({"role": "assistant", "content": None, "tool_calls": calls})
@@ -478,7 +470,6 @@ RULES:
             yield {"sentence": "My API key is not configured, Sir.", "sentiment": "sorrow", "action": "error", "language": "en", "done": True}
             return
 
-        # Shortcuts may send an email / WhatsApp (blocking I/O) -> keep them off the event loop.
         if not has_image:
             quick = await asyncio.to_thread(self._quick_intent, text)
             if quick:
@@ -498,7 +489,7 @@ RULES:
 
         messages = [{"role": "system", "content": self._get_system_prompt(lang)}] + self.history
         action_type: str = "chat"
-        pending_url: Optional[str] = None  # attach a tool's open_url to ONE sentence only
+        pending_url: Optional[str] = None
         buffer, full_reply = "", ""
 
         try:
@@ -545,7 +536,6 @@ RULES:
                 yield {"sentence": leftover, "sentiment": self._detect_sentiment(full_reply), "action": action_type,
                        "language": lang, "open_url": url, "done": True}
             elif pending_url:
-                # Tool produced a link but the model said nothing: still deliver the link.
                 yield {"sentence": "Right away, Sir.", "sentiment": "joy", "action": action_type,
                        "language": "en", "open_url": pending_url, "done": True}
 
