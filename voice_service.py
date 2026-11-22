@@ -1,8 +1,3 @@
-"""
-JARVIS Voice Service (100% Free Edge-TTS + Groq Whisper STT)
-Dual-voice synthesis for crisp British English + natural, brisk Urdu pronunciation.
-"""
-
 import os
 import re
 import hashlib
