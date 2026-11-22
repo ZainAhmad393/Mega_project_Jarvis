@@ -1,23 +1,43 @@
 """
 JARVIS Persistent Memory & Diagnostic Storage
-Supports Permanent Cloud PostgreSQL (via DATABASE_URL) and Local SQLite fallback.
-Handles Scheduled Tasks + Pre-Reminders, Contacts + Social Handles, Task Reports,
+Supports Permanent Cloud PostgreSQL (via DATABASE_URL with Connection Pooling) and Local SQLite fallback.
+Handles Scheduled Tasks + 30m/5m Pre-Reminders, Contacts + Social Handles, Task Reports,
 Learned Skills, Episodic Memories, Chat History, Pending Actions, & System Issue Diagnostics.
 """
 
 import os
+import time
 import sqlite3
 import json
 import logging
+import threading
 from contextlib import contextmanager
 from typing import List, Dict, Optional, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    ZoneInfo = None
 
 load_dotenv()
 logger = logging.getLogger("JarvisMemory")
 
 DB_PATH = os.getenv("DATABASE_PATH", "jarvis.db")
+
+
+def local_now() -> datetime:
+    """Returns current naive datetime in APP_TIMEZONE (defaults to Asia/Karachi so Render UTC matches Pakistan time)."""
+    tz_name = os.getenv("APP_TIMEZONE", "Asia/Karachi").strip()
+    if ZoneInfo is not None and tz_name:
+        try:
+            return datetime.now(ZoneInfo(tz_name)).replace(tzinfo=None)
+        except Exception:
+            pass
+    if tz_name == "Asia/Karachi":
+        return datetime.now(timezone(timedelta(hours=5))).replace(tzinfo=None)
+    return datetime.now()
 
 
 class MemoryManager:
@@ -35,14 +55,53 @@ class MemoryManager:
         env_url = os.getenv("DATABASE_URL", "").strip() if database_url is None else database_url.strip()
         self.database_url = env_url if (env_url.startswith(("postgres://", "postgresql://")) and db_path == DB_PATH) else ""
         self.is_postgres = bool(self.database_url)
+        self._local = threading.local()
+        self._pg_pool = None
+        self._prompt_cache: Optional[str] = None
+        self._prompt_cache_ts: float = 0.0
+
+        if self.is_postgres:
+            try:
+                from psycopg.rows import dict_row
+                from psycopg_pool import ConnectionPool
+                self._pg_pool = ConnectionPool(
+                    self.database_url,
+                    min_size=1,
+                    max_size=6,
+                    open=True,
+                    kwargs={"row_factory": dict_row, "prepare_threshold": None},
+                )
+            except Exception as e:
+                logger.warning("psycopg_pool unavailable, using thread-local reuse: %s", e)
+                self._pg_pool = None
+
         self._init_db()
         self._initialized = True
 
     def close(self):
+        if self._pg_pool is not None:
+            try:
+                self._pg_pool.close()
+            except Exception:
+                pass
+            self._pg_pool = None
+        conn = getattr(self._local, "pg_conn", None)
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            self._local.pg_conn = None
         self._initialized = False
+
+    def invalidate_prompt_cache(self):
+        self._prompt_cache = None
+        self._prompt_cache_ts = 0.0
 
     @classmethod
     def reset_instance(cls, db_path: str = DB_PATH):
+        if cls._instance is not None:
+            cls._instance.close()
         cls._instance = None
         inst = cls(db_path=db_path, database_url="")
         inst.db_path = db_path
@@ -54,13 +113,41 @@ class MemoryManager:
     @contextmanager
     def _get_connection(self):
         if self.is_postgres:
-            import psycopg
-            from psycopg.rows import dict_row
-            conn = psycopg.connect(self.database_url, row_factory=dict_row)
-            try:
-                yield conn
-            finally:
-                conn.close()
+            if self._pg_pool is not None:
+                with self._pg_pool.connection() as conn:
+                    yield conn
+            else:
+                import psycopg
+                from psycopg.rows import dict_row
+                conn = getattr(self._local, "pg_conn", None)
+                last_used = getattr(self._local, "pg_last_used", 0.0)
+                if conn is not None and not conn.closed and (time.time() - last_used) > 45:
+                    try:
+                        conn.execute("SELECT 1")
+                    except Exception:
+                        try:
+                            conn.close()
+                        except Exception:
+                            pass
+                        conn = None
+                if conn is None or conn.closed:
+                    conn = psycopg.connect(self.database_url, row_factory=dict_row, prepare_threshold=None)
+                    self._local.pg_conn = conn
+                try:
+                    yield conn
+                    self._local.pg_last_used = time.time()
+                except Exception:
+                    try:
+                        if not conn.closed:
+                            conn.rollback()
+                    except Exception:
+                        pass
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    self._local.pg_conn = None
+                    raise
         else:
             conn = sqlite3.connect(self.db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
@@ -102,7 +189,9 @@ class MemoryManager:
                     recurrence TEXT DEFAULT 'once',
                     reminded INTEGER DEFAULT 0,
                     pre_reminded INTEGER DEFAULT 0,
-                    remind_before_mins INTEGER DEFAULT 15,
+                    pre_reminded_30 INTEGER DEFAULT 0,
+                    pre_reminded_5 INTEGER DEFAULT 0,
+                    remind_before_mins INTEGER DEFAULT 30,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     completed_at TEXT DEFAULT NULL
                 )
@@ -111,9 +200,10 @@ class MemoryManager:
             self._ensure_column(cursor, "todos", "recurrence", "TEXT DEFAULT 'once'")
             self._ensure_column(cursor, "todos", "reminded", "INTEGER DEFAULT 0")
             self._ensure_column(cursor, "todos", "pre_reminded", "INTEGER DEFAULT 0")
-            self._ensure_column(cursor, "todos", "remind_before_mins", "INTEGER DEFAULT 15")
+            self._ensure_column(cursor, "todos", "pre_reminded_30", "INTEGER DEFAULT 0")
+            self._ensure_column(cursor, "todos", "pre_reminded_5", "INTEGER DEFAULT 0")
+            self._ensure_column(cursor, "todos", "remind_before_mins", "INTEGER DEFAULT 30")
 
-            # Completion history log (keeps daily & one-off completions for reports)
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS task_completions (
                     id {id_col},
@@ -211,20 +301,20 @@ class MemoryManager:
         task: str,
         due_time: Optional[str] = None,
         recurrence: str = "once",
-        remind_before_mins: int = 15,
+        remind_before_mins: int = 30,
     ) -> Dict[str, Any]:
         clean_rec = recurrence if recurrence in ("once", "daily") else "once"
         try:
             mins = max(0, int(remind_before_mins))
         except (TypeError, ValueError):
-            mins = 15
+            mins = 30
         with self._get_connection() as conn:
             cursor = conn.cursor()
             todo_id = self._insert_get_id(
                 cursor,
                 """
-                INSERT INTO todos (task, status, due_time, recurrence, reminded, pre_reminded, remind_before_mins)
-                VALUES (?, 'pending', ?, ?, 0, 0, ?)
+                INSERT INTO todos (task, status, due_time, recurrence, reminded, pre_reminded, pre_reminded_30, pre_reminded_5, remind_before_mins)
+                VALUES (?, 'pending', ?, ?, 0, 0, 0, 0, ?)
                 """,
                 (task.strip(), due_time, clean_rec, mins),
             )
@@ -239,7 +329,7 @@ class MemoryManager:
             }
 
     def get_todos(self, status: Optional[str] = "pending") -> List[Dict[str, Any]]:
-        cols = "id, task, status, due_time, recurrence, reminded, pre_reminded, remind_before_mins, created_at, completed_at"
+        cols = "id, task, status, due_time, recurrence, reminded, pre_reminded, pre_reminded_30, pre_reminded_5, remind_before_mins, created_at, completed_at"
         with self._get_connection() as conn:
             cursor = conn.cursor()
             if status:
@@ -258,13 +348,13 @@ class MemoryManager:
             return [dict(r) for r in cursor.fetchall()]
 
     def get_upcoming_and_due_reminders(self, now: Optional[datetime] = None) -> Dict[str, List[Dict[str, Any]]]:
-        """Returns {'pre_due': [...], 'due_now': [...]}. pre_due items carry 'mins_left'."""
-        now = now or datetime.now()
-        pre_due, due_now = [], []
+        """Returns 30-min warning, 5-min warning, and exact due-time reminders."""
+        now = now or local_now()
+        pre_30, pre_5, due_now = [], [], []
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT id, task, due_time, recurrence, reminded, pre_reminded, remind_before_mins "
+                "SELECT id, task, due_time, recurrence, reminded, pre_reminded, pre_reminded_30, pre_reminded_5, remind_before_mins "
                 "FROM todos WHERE status = 'pending' AND due_time IS NOT NULL"
             )
             rows = cursor.fetchall()
@@ -274,23 +364,38 @@ class MemoryManager:
                 due_dt = datetime.fromisoformat(item["due_time"])
             except (ValueError, TypeError):
                 continue
-            mins_before = int(item.get("remind_before_mins") or 15)
-            pre_dt = due_dt - timedelta(minutes=mins_before)
+
+            t30 = due_dt - timedelta(minutes=30)
+            t5 = due_dt - timedelta(minutes=5)
+
             if int(item.get("reminded") or 0) == 0 and due_dt <= now:
                 due_now.append(item)
-            elif int(item.get("pre_reminded") or 0) == 0 and mins_before > 0 and pre_dt <= now < due_dt:
+            elif int(item.get("pre_reminded_5") or 0) == 0 and t5 <= now < due_dt:
                 item["mins_left"] = max(1, round((due_dt - now).total_seconds() / 60))
-                pre_due.append(item)
-        return {"pre_due": pre_due, "due_now": due_now}
+                pre_5.append(item)
+            elif int(item.get("pre_reminded_30") or 0) == 0 and t30 <= now < t5:
+                item["mins_left"] = max(1, round((due_dt - now).total_seconds() / 60))
+                pre_30.append(item)
+
+        return {"pre_30": pre_30, "pre_5": pre_5, "pre_due": pre_30 + pre_5, "due_now": due_now}
 
     def get_due_reminders(self, now: Optional[datetime] = None) -> List[Dict[str, Any]]:
         return self.get_upcoming_and_due_reminders(now)["due_now"]
 
-    def mark_todo_pre_reminded(self, todo_id: int):
+    def mark_todo_pre_reminded_30(self, todo_id: int):
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(self._q("UPDATE todos SET pre_reminded = 1 WHERE id = ?"), (todo_id,))
+            cursor.execute(self._q("UPDATE todos SET pre_reminded_30 = 1, pre_reminded = 1 WHERE id = ?"), (todo_id,))
             conn.commit()
+
+    def mark_todo_pre_reminded_5(self, todo_id: int):
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(self._q("UPDATE todos SET pre_reminded_5 = 1, pre_reminded_30 = 1 WHERE id = ?"), (todo_id,))
+            conn.commit()
+
+    def mark_todo_pre_reminded(self, todo_id: int):
+        self.mark_todo_pre_reminded_30(todo_id)
 
     def mark_todo_reminded(self, todo_id: int, recurrence: str = "once", current_due: Optional[str] = None):
         with self._get_connection() as conn:
@@ -299,19 +404,17 @@ class MemoryManager:
                 try:
                     next_dt = datetime.fromisoformat(current_due) + timedelta(days=1)
                     cursor.execute(
-                        self._q("UPDATE todos SET due_time = ?, reminded = 0, pre_reminded = 0 WHERE id = ?"),
+                        self._q("UPDATE todos SET due_time = ?, reminded = 0, pre_reminded = 0, pre_reminded_30 = 0, pre_reminded_5 = 0 WHERE id = ?"),
                         (next_dt.isoformat(timespec="minutes"), todo_id),
                     )
                     conn.commit()
                     return
                 except ValueError:
                     pass
-            cursor.execute(self._q("UPDATE todos SET reminded = 1 WHERE id = ?"), (todo_id,))
+            cursor.execute(self._q("UPDATE todos SET reminded = 1, pre_reminded_30 = 1, pre_reminded_5 = 1 WHERE id = ?"), (todo_id,))
             conn.commit()
 
     def complete_todo(self, todo_id: Optional[int] = None, task_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Complete by DB id or fuzzy task name. Logs to task_completions; daily tasks roll to tomorrow.
-        Returns the completed task dict, or None if nothing matched."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             row = None
@@ -328,7 +431,8 @@ class MemoryManager:
                 return None
 
             item = dict(row)
-            now_iso = datetime.now().isoformat(timespec="seconds")
+            now_dt = local_now()
+            now_iso = now_dt.isoformat(timespec="seconds")
 
             self._insert_get_id(
                 cursor,
@@ -341,13 +445,13 @@ class MemoryManager:
                 if item.get("due_time"):
                     try:
                         due_dt = datetime.fromisoformat(item["due_time"])
-                        while due_dt <= datetime.now():
+                        while due_dt <= now_dt:
                             due_dt += timedelta(days=1)
                         next_due = due_dt.isoformat(timespec="minutes")
                     except ValueError:
                         next_due = None
                 cursor.execute(
-                    self._q("UPDATE todos SET due_time = ?, reminded = 0, pre_reminded = 0, completed_at = ? WHERE id = ?"),
+                    self._q("UPDATE todos SET due_time = ?, reminded = 0, pre_reminded = 0, pre_reminded_30 = 0, pre_reminded_5 = 0, completed_at = ? WHERE id = ?"),
                     (next_due, now_iso, item["id"]),
                 )
             else:
@@ -366,7 +470,7 @@ class MemoryManager:
             return cursor.rowcount > 0
 
     def get_task_report(self, period: str = "daily") -> Dict[str, Any]:
-        now = datetime.now()
+        now = local_now()
         cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0) if period == "daily" else (now - timedelta(days=7))
         pending = self.get_todos("pending")
         completed_period = []
@@ -388,7 +492,7 @@ class MemoryManager:
             "pending_tasks": pending,
         }
 
-    # ------------------ Contacts Management (CRUD + Social Media) ------------------
+    # ------------------ Contacts Management ------------------
     def save_contact(
         self,
         name: str,
@@ -402,8 +506,6 @@ class MemoryManager:
         notes: str = "",
         overwrite_empty: bool = False,
     ) -> Dict[str, Any]:
-        """Create or update. By default empty arguments keep the stored value;
-        with overwrite_empty=True (used by the Edit form) empty arguments clear it."""
         key = name.strip().lower()
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -446,10 +548,11 @@ class MemoryManager:
                 (
                     key, name.strip(), vals["phone"], vals["email"],
                     vals["instagram"], vals["facebook"], vals["tiktok"], vals["twitter"], vals["linkedin"],
-                    vals["notes"], datetime.now().isoformat(),
+                    vals["notes"], local_now().isoformat(),
                 ),
             )
             conn.commit()
+            self.invalidate_prompt_cache()
             return {"key": key, "name": name.strip(), "display_name": name.strip(), **vals}
 
     def update_contact_by_key(self, contact_key: str, fields: Dict[str, str]) -> Optional[Dict[str, Any]]:
@@ -483,10 +586,10 @@ class MemoryManager:
             cursor = conn.cursor()
             cursor.execute(self._q("DELETE FROM contacts WHERE name = ?"), (contact_key.strip().lower(),))
             conn.commit()
+            self.invalidate_prompt_cache()
             return cursor.rowcount > 0
 
     def get_contact(self, name: str) -> Optional[Dict[str, Any]]:
-        """Exact match first, then names starting with the text, then names containing it."""
         key = name.strip().lower()
         if not key:
             return None
@@ -518,7 +621,7 @@ class MemoryManager:
     # ------------------ Skills, Episodes & Self-Diagnostics ------------------
     def learn_skill(self, name: str, trigger_phrase: str, instructions: str) -> Dict[str, Any]:
         key = name.strip().lower()
-        now = datetime.now().isoformat()
+        now = local_now().isoformat()
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -533,6 +636,7 @@ class MemoryManager:
                 (key, trigger_phrase.strip(), instructions.strip(), now),
             )
             conn.commit()
+            self.invalidate_prompt_cache()
             return {"name": key, "trigger_phrase": trigger_phrase.strip(), "instructions": instructions.strip()}
 
     def get_skills(self) -> List[Dict[str, Any]]:
@@ -550,6 +654,7 @@ class MemoryManager:
                 (summary.strip(), importance),
             )
             conn.commit()
+            self.invalidate_prompt_cache()
             return ep_id
 
     def get_recent_episodes(self, limit: int = 8) -> List[Dict[str, Any]]:
@@ -559,9 +664,8 @@ class MemoryManager:
             return [dict(r) for r in cursor.fetchall()]
 
     def log_issue(self, issue_type: str, component: str, details: str, latency_ms: Optional[int] = None) -> int:
-        """Never raises: diagnostics must not be able to break the assistant."""
         try:
-            now_iso = datetime.now().isoformat(timespec="seconds")
+            now_iso = local_now().isoformat(timespec="seconds")
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 issue_id = self._insert_get_id(
@@ -571,7 +675,7 @@ class MemoryManager:
                 )
                 conn.commit()
                 return issue_id
-        except Exception as e:  # pragma: no cover
+        except Exception as e:
             logger.warning("Could not log issue: %s", e)
             return 0
 
@@ -584,7 +688,7 @@ class MemoryManager:
 
     def get_system_report(self, period: str = "weekly") -> Dict[str, Any]:
         days = 30 if period == "monthly" else 7
-        cutoff = datetime.now() - timedelta(days=days)
+        cutoff = local_now() - timedelta(days=days)
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -618,7 +722,7 @@ class MemoryManager:
     def remember(self, key: str, value: str, category: str = "general") -> Dict[str, Any]:
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            now = datetime.now().isoformat()
+            now = local_now().isoformat()
             cursor.execute(
                 self._q("""
                     INSERT INTO memories (key, value, category, updated_at)
@@ -631,6 +735,7 @@ class MemoryManager:
                 (key.strip().lower(), value.strip(), category, now),
             )
             conn.commit()
+            self.invalidate_prompt_cache()
             return {"key": key, "value": value, "category": category}
 
     def recall(self, key: Optional[str] = None) -> Any:
@@ -644,6 +749,10 @@ class MemoryManager:
             return [dict(row) for row in cursor.fetchall()]
 
     def get_system_prompt_context(self) -> str:
+        now = time.time()
+        if self._prompt_cache is not None and (now - self._prompt_cache_ts) < 20.0:
+            return self._prompt_cache
+
         sections = []
         memories = self.recall()
         if memories:
@@ -665,7 +774,11 @@ class MemoryManager:
         episodes = self.get_recent_episodes(5)
         if episodes:
             sections.append("VIRTUAL LIFE JOURNAL:\n" + "\n".join(f"- {e['summary']}" for e in episodes))
-        return "\n\n".join(sections) if sections else "No previous memories recorded."
+
+        result = "\n\n".join(sections) if sections else "No previous memories recorded."
+        self._prompt_cache = result
+        self._prompt_cache_ts = now
+        return result
 
     # ------------------ Pending Action Confirmations ------------------
     def create_pending_action(self, action_type: str, payload: Dict[str, Any], summary: str) -> int:

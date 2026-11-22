@@ -18,7 +18,7 @@ from email.message import EmailMessage
 from urllib.parse import quote_plus
 from typing import Optional, Dict, Any
 
-from memory import memory
+from memory import memory, local_now
 
 logger = logging.getLogger("JarvisTools")
 
@@ -30,7 +30,7 @@ def format_due_readable(iso_str: Optional[str]) -> str:
         return "No deadline"
     try:
         dt = datetime.fromisoformat(str(iso_str))
-        today = datetime.now().date()
+        today = local_now().date()
         time_part = dt.strftime("%I:%M %p").lstrip("0")
         if dt.date() == today:
             return f"Today at {time_part}"
@@ -51,12 +51,19 @@ def _parse_due_time(due_time: Optional[str]) -> Optional[str]:
         return datetime.fromisoformat(raw).isoformat(timespec="minutes")
     except ValueError:
         pass
-    now = datetime.now()
+    now = local_now()
+    lower = raw.lower()
+    day_offset = 0
+    if lower.startswith("tomorrow"):
+        day_offset = 1
+        raw = re.sub(r"^tomorrow\s*(at\s*)?", "", lower, flags=re.IGNORECASE).strip()
+    elif lower.startswith("today"):
+        raw = re.sub(r"^today\s*(at\s*)?", "", lower, flags=re.IGNORECASE).strip()
     for fmt in ("%H:%M", "%I:%M %p", "%I:%M%p", "%I %p", "%I%p"):
         try:
             t = datetime.strptime(raw.upper(), fmt).time()
-            candidate = datetime.combine(now.date(), t)
-            if candidate <= now:
+            candidate = datetime.combine(now.date() + timedelta(days=day_offset), t)
+            if day_offset == 0 and candidate <= now:
                 candidate += timedelta(days=1)
             return candidate.isoformat(timespec="minutes")
         except ValueError:
@@ -80,8 +87,8 @@ def _vcf_field(block: str, field: str) -> str:
 
 def import_vcf_contacts(vcf_text: str) -> int:
     """Parse an Android/iOS .vcf (vCard) export and save contacts."""
-    vcf_text = re.sub(r"=\r?\n", "", vcf_text)        # quoted-printable soft breaks
-    vcf_text = re.sub(r"\r?\n[ \t]", "", vcf_text)    # RFC folded lines
+    vcf_text = re.sub(r"=\r?\n", "", vcf_text)
+    vcf_text = re.sub(r"\r?\n[ \t]", "", vcf_text)
 
     imported = 0
     for block in re.split(r"END:VCARD", vcf_text, flags=re.IGNORECASE):
@@ -89,7 +96,7 @@ def import_vcf_contacts(vcf_text: str) -> int:
             continue
         name = _vcf_field(block, "FN")
         if not name:
-            parts = _vcf_field(block, "N").split(";")  # Family;Given;Additional;Prefix;Suffix
+            parts = _vcf_field(block, "N").split(";")
             given = parts[1].strip() if len(parts) > 1 else ""
             family = parts[0].strip() if parts else ""
             name = f"{given} {family}".strip()
@@ -168,7 +175,7 @@ def get_weather(city: str = "") -> Dict[str, Any]:
 
 
 def morning_briefing(city: str = "") -> Dict[str, Any]:
-    now_str = datetime.now().strftime("%A, %I:%M %p")
+    now_str = local_now().strftime("%A, %I:%M %p")
     wx = get_weather(city)
     todos = memory.get_todos("pending")
     if todos:
@@ -188,7 +195,7 @@ def play_music(name: str) -> Dict[str, Any]:
     search_url = f"https://www.youtube.com/results?search_query={quote_plus(name)}"
     try:
         try:
-            from musicLibrary import music  # optional personal library {song: url}
+            from musicLibrary import music
         except ImportError:
             music = {}
         url = music.get(key)
@@ -283,13 +290,13 @@ def get_contact(name: str) -> Dict[str, Any]:
 
 
 # ------------------------------------------------------------------ tasks / schedule
-def add_todo(task: str, due_time: Optional[str] = None, recurrence: str = "once", remind_before_mins: int = 15) -> Dict[str, Any]:
+def add_todo(task: str, due_time: Optional[str] = None, recurrence: str = "once", remind_before_mins: int = 30) -> Dict[str, Any]:
     try:
         parsed_due = _parse_due_time(due_time)
         item = memory.add_todo(task, due_time=parsed_due, recurrence=recurrence, remind_before_mins=remind_before_mins)
         msg = f"Task added: {item['task']}"
         if parsed_due:
-            msg += f" ({format_due_readable(parsed_due)}, {item['recurrence']}, I will remind you {item['remind_before_mins']} minutes before)"
+            msg += f" ({format_due_readable(parsed_due)}, {item['recurrence']}, reminders set 30 minutes and 5 minutes before)"
         elif due_time:
             msg += f" (I could not understand the time '{due_time}', so no reminder was set)"
         return {"status": "success", "todo_id": item["id"], "task": item["task"], "due_time": parsed_due, "message": msg}
@@ -299,7 +306,6 @@ def add_todo(task: str, due_time: Optional[str] = None, recurrence: str = "once"
 
 
 def get_todo() -> Dict[str, Any]:
-    """Count + numbered list. The numbers here are what the user says to complete a task."""
     try:
         rows = memory.get_todos("pending")
         if not rows:
@@ -320,11 +326,6 @@ def complete_todo(
     task_name: Optional[str] = None,
     todo_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Complete a task.
-    - task_number: 1-based position in the numbered list from get_todo (what the user says: "complete task 2")
-    - task_name:   fuzzy match on the task text ("complete the gym task")
-    - todo_id:     real database id (used only by the REST API / dashboard buttons)
-    """
     try:
         done_item = None
         if todo_id is not None:
@@ -472,7 +473,6 @@ def send_whatsapp(contact: str = "", message: str = "", contact_or_phone: str = 
 
 
 def send_social_message(contact: str, platform: str, message: str) -> Dict[str, Any]:
-    """Prepare a message for a contact on Instagram / Facebook / TikTok / X / LinkedIn using their saved handle."""
     p = (platform or "").strip().lower()
     p = {"insta": "instagram", "ig": "instagram", "fb": "facebook", "x": "twitter", "tweet": "twitter"}.get(p, p)
     if p not in ("instagram", "facebook", "tiktok", "twitter", "linkedin"):
@@ -594,20 +594,20 @@ TOOLS = [
      "description": "Prepare a message for a contact on Instagram, Facebook, TikTok, X/Twitter, or LinkedIn (asks confirmation first).",
      "parameters": {"type": "object", "properties": {"contact": {"type": "string"}, "platform": {"type": "string", "enum": ["instagram", "facebook", "tiktok", "twitter", "linkedin"]}, "message": {"type": "string"}}, "required": ["contact", "platform", "message"]}},
     {"name": "add_todo", "func": add_todo,
-     "description": "Add a task or timed reminder (notifies before the due time and again at the due time). Convert times like '5 baje' to '17:00'.",
-     "parameters": {"type": "object", "properties": {"task": {"type": "string"}, "due_time": {"type": "string", "description": "e.g. '17:30' or '5:30 PM'"}, "recurrence": {"type": "string", "enum": ["once", "daily"]}, "remind_before_mins": {"type": "integer", "description": "Minutes before the due time for the early reminder (default 15)"}}, "required": ["task"]}},
+     "description": "Add a task or timed reminder (notifies 30 minutes before, 5 minutes before, and at due time). Convert times like '5 baje' to '17:00' or ISO date-time.",
+     "parameters": {"type": "object", "properties": {"task": {"type": "string"}, "due_time": {"type": "string", "description": "e.g. '2026-11-25T17:30', 'tomorrow 5pm', or '5:30 PM'"}, "recurrence": {"type": "string", "enum": ["once", "daily"]}, "remind_before_mins": {"type": "integer", "description": "Default 30"}}, "required": ["task"]}},
     {"name": "get_todo", "func": get_todo, "description": "Show the count and numbered list of pending tasks.",
      "parameters": {"type": "object", "properties": {}}},
     {"name": "complete_todo", "func": complete_todo,
-     "description": "Mark a task completed. Use task_number for the position in the numbered list (e.g. 'complete task 2') or task_name for a task by name.",
-     "parameters": {"type": "object", "properties": {"task_number": {"type": "integer", "description": "1-based position in the numbered task list"}, "task_name": {"type": "string"}}}},
+     "description": "Mark a task completed. Use task_number or task_name.",
+     "parameters": {"type": "object", "properties": {"task_number": {"type": "integer"}, "task_name": {"type": "string"}}}},
     {"name": "daily_plan", "func": daily_plan, "description": "Summarize today's pending tasks.",
      "parameters": {"type": "object", "properties": {}}},
     {"name": "get_task_report", "func": get_task_report, "description": "Get a daily or weekly report of completed and pending tasks.",
      "parameters": {"type": "object", "properties": {"period": {"type": "string", "enum": ["daily", "weekly"]}}}},
     {"name": "get_jarvis_report", "func": get_jarvis_report, "description": "Get Jarvis' weekly or monthly self-analysis report of issues faced.",
      "parameters": {"type": "object", "properties": {"period": {"type": "string", "enum": ["weekly", "monthly"]}}}},
-    {"name": "save_contact", "func": save_contact, "description": "Save a contact with phone, email, or social handles (instagram, facebook, tiktok, twitter, linkedin).",
+    {"name": "save_contact", "func": save_contact, "description": "Save a contact with phone, email, or social handles.",
      "parameters": {"type": "object", "properties": {"name": {"type": "string"}, "phone": {"type": "string"}, "email": {"type": "string"}, "instagram": {"type": "string"}, "facebook": {"type": "string"}, "tiktok": {"type": "string"}, "twitter": {"type": "string"}, "linkedin": {"type": "string"}}, "required": ["name"]}},
     {"name": "get_contact", "func": get_contact, "description": "Look up a contact.",
      "parameters": {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}},

@@ -2,10 +2,6 @@
 JARVIS Core AI Engine powered by Groq & Dynamic Tool/Function Calling
 Strict language matching (EN / UR / MIX) + fast token-to-sentence streaming
 + camera vision (image_base64) with optional Gemini fallback + auto-learning.
-
-Environment variables:
-    GROQ_API_KEY, GROQ_MODEL, GROQ_FAST_MODEL, GROQ_VISION_MODEL
-    GEMINI_API_KEY (optional vision fallback), GEMINI_MODEL (optional)
 """
 
 import os
@@ -14,7 +10,6 @@ import logging
 import re
 import random
 import asyncio
-from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple, AsyncGenerator
 from dotenv import load_dotenv
 from groq import Groq, AsyncGroq
@@ -44,20 +39,33 @@ MAX_TOOL_ROUNDS = 3
 
 _ROMAN_URDU_WORDS = {
     "aap", "ap", "kaise", "kese", "kesy", "kaisa", "kaisi", "kya", "hain", "hai", "hei",
-    "nahin", "nahi", "ni", "haan", "ji", "theek", "thk", "kahan", "kyun", "kab", "ka", "ki",
-    "ko", "ke", "mein", "main", "mujhe", "mujy", "tum", "mera", "meri", "mere", "mery",
-    "apna", "apni", "hum", "wo", "ye", "yeh", "woh", "bhi", "abhi", "pehle", "baad", "saath",
-    "sath", "karna", "krna", "kro", "karo", "kr", "kar", "krdo", "sakta", "skta", "batao",
-    "btao", "bata", "kaho", "bolo", "sunao", "dikhao", "chalao", "lagao", "kholo", "kuch",
-    "kon", "koun", "kia", "kitna", "kitni", "bhej", "bhejo", "likho", "yaad", "bhai", "yaar",
-    "chaho", "chahta", "madad", "chae", "tumhe", "tumy", "sb", "sab", "aur", "mausam",
-    "raha", "rahi", "rha", "rhi", "acha", "accha", "bohat", "bahut", "zara", "zaroor",
-    "shukriya",
+    "nahin", "nahi", "ni", "nhi", "haan", "han", "ha", "ji", "theek", "thk", "kahan",
+    "kyun", "kyn", "kab", "ka", "ki", "ko", "ke", "mein", "main", "me", "mujhe", "mujy",
+    "tum", "tm", "mera", "meri", "mere", "mery", "apna", "apni", "hum", "hm", "wo", "ye",
+    "yeh", "woh", "bhi", "abhi", "pehle", "baad", "saath", "sath", "karna", "krna", "kro",
+    "karo", "kr", "kar", "krdo", "kardo", "kry", "kare", "karu", "kahu", "sakta", "skta",
+    "batao", "btao", "bata", "kaho", "bolo", "sunao", "dikhao", "chalao", "lagao", "kholo",
+    "kuch", "kon", "koun", "kaun", "kia", "kitna", "kitni", "bhej", "bhejo", "likho", "yaad",
+    "bhai", "bahi", "yaar", "chaho", "chahta", "madad", "chae", "tumhe", "tumy", "sb", "sab",
+    "aur", "or", "mausam", "raha", "rahi", "rha", "rhi", "acha", "accha", "bohat", "bahut",
+    "bht", "zara", "zaroor", "shukriya", "hn", "hu", "hun", "hoon", "ho", "bat", "baat",
+    "isy", "isko", "usko", "uska", "uski", "unka", "py", "pe", "par", "gya", "gaya", "gyi",
+    "gayi", "mil", "de", "dy", "le", "ly", "puchu", "pooch", "ketha", "kehta", "kaha",
+    "roman", "urdu",
 }
+
+_ACTION_KEYWORDS = (
+    "task", "todo", "remind", "reminder", "schedule", "plan", "report", "weather", "mausam",
+    "briefing", "whatsapp", "message", "msg", "sms", "email", "mail", "call", "dial",
+    "contact", "save", "remember", "recall", "memory", "skill", "learn", "open", "play",
+    "music", "song", "youtube", "instagram", "insta", "facebook", "fb", "tiktok",
+    "twitter", "linkedin", "google", "search", "find", "news", "latest", "price",
+    "diagnostic", "issue", "problem", "complete", "done", "finish", "bhejo", "likho",
+    "kholo", "chalao", "yaad", "baje",
+)
 
 
 def _has_phrase(clean: str, phrases) -> bool:
-    """Whole-word phrase match, so 'open chat' does not fire on 'open chatgpt'."""
     return any(re.search(rf"\b{re.escape(p)}\b", clean) for p in phrases)
 
 
@@ -76,11 +84,11 @@ class JarvisAI:
         self.client = Groq(api_key=self.api_key) if self.api_key else None
         self.async_client = AsyncGroq(api_key=self.api_key) if self.api_key else None
         self.model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-        self.fast_model = os.getenv("GROQ_FAST_MODEL", "openai/gpt-oss-20b")
+        self.fast_model = os.getenv("GROQ_FAST_MODEL", "llama-3.1-8b-instant")
         self.vision_model = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+        self.preferred_language: Optional[str] = None
         self.history: List[Dict[str, Any]] = []
 
-    # ------------------------------------------------------------------ language
     def _detect_input_language(self, user_message: str) -> str:
         urdu_chars = len(_ARABIC_SCRIPT.findall(user_message))
         latin_words = re.findall(r"\b[a-zA-Z]+\b", user_message.lower())
@@ -92,9 +100,19 @@ class JarvisAI:
 
         if latin_words:
             matched = sum(1 for w in latin_words if w in _ROMAN_URDU_WORDS)
-            if matched >= 2 or (matched >= 1 and matched / len(latin_words) >= 0.22):
+            if matched >= 2 or (matched >= 1 and matched / len(latin_words) >= 0.2):
                 return "mix"
         return "en"
+
+    @staticmethod
+    def _is_casual_fast_chat(user_message: str, lang: str) -> bool:
+        if lang != "en":
+            return False
+        words = user_message.lower().split()
+        if len(words) > 12:
+            return False
+        lower = user_message.lower()
+        return not any(k in lower for k in _ACTION_KEYWORDS)
 
     def _get_system_prompt(self, language: str = "en") -> str:
         try:
@@ -102,39 +120,38 @@ class JarvisAI:
         except Exception as e:
             logger.warning("Could not load memory context: %s", e)
             memory_context = ""
-        now_str = datetime.now().strftime("%Y-%m-%d %I:%M %p")
+        now_str = tools_module.local_now().strftime("%Y-%m-%d %I:%M %p")
 
         if language == "ur":
             lang_instruction = (
-                "LANGUAGE RULE (STRICT): The user spoke in Urdu. Reply 100% in warm, natural, conversational Urdu script (اردو). "
-                "Never use stiff textbook phrases like 'میں بھی بخیر ہوں' or 'ٹاسک مینجمنٹ'. Address the user as 'سر' or 'جناب'."
+                "LANGUAGE RULE (STRICT): Reply 100% in warm, natural, everyday Pakistani Urdu script (اردو). "
+                "Never use stiff textbook phrases. Address the user as 'سر' or 'جناب'. Write your name as 'جاروس' (NEVER J.A.R.V.I.S)."
             )
         elif language == "mix":
             lang_instruction = (
                 "LANGUAGE RULE (STRICT): The user spoke in Roman Urdu / Urdu-English mix. "
-                "Reply in warm, natural, everyday Pakistani Urdu script (اردو) — witty and human-like, NOT stiff textbook Urdu. "
-                "Actually answer their exact question or banter naturally."
+                "Reply in warm, natural, conversational Pakistani Urdu script (اردو) so voice pronunciation is 100% authentic Pakistani Urdu — "
+                "NEVER output Roman Urdu in Latin letters and NEVER write J.A.R.V.I.S with dots. Address the user as 'سر'."
             )
         else:
             lang_instruction = (
-                "LANGUAGE RULE (STRICT): The user spoke in English. Reply 100% in sharp, witty British English like Tony Stark's JARVIS. "
-                "NEVER insert Urdu words. Address the user as 'Sir'."
+                "LANGUAGE RULE (STRICT): The user spoke in English. Reply 100% in sharp, witty British English like Tony Stark's Jarvis. "
+                "NEVER insert Urdu words. Always write 'Jarvis', NEVER 'J.A.R.V.I.S.' with dots. Address the user as 'Sir'."
             )
 
-        return f"""You are J.A.R.V.I.S., an ultra-capable, witty, loyal AI assistant inspired by Iron Man, built by Zain Ahmad.
+        return f"""You are Jarvis, an ultra-capable, witty, loyal AI assistant inspired by Iron Man, built by Zain Ahmad.
 Current local date/time: {now_str}
 
 PERSISTENT MEMORY, CONTACTS & VIRTUAL LIFE JOURNAL:
 {memory_context}
 
 RULES:
-1. USE TOOLS IMMEDIATELY for tasks/reminders (add_todo, get_todo showing count & numbered items, complete_todo by number or task_name, get_task_report for daily/weekly report), calls (call_contact), WhatsApp/SMS (send_whatsapp), Instagram/Facebook/TikTok/X/LinkedIn messages (send_social_message), email (send_email), weather (get_weather), morning briefing (morning_briefing), Jarvis weekly/monthly self-diagnostics (get_jarvis_report), web search, contacts (save_contact/get_contact), memories, and learning skills.
+1. USE TOOLS IMMEDIATELY for tasks/reminders (add_todo, get_todo, complete_todo, get_task_report), calls (call_contact), WhatsApp/SMS (send_whatsapp), Instagram/Facebook/TikTok/X/LinkedIn (send_social_message), email (send_email), weather (get_weather), morning briefing (morning_briefing), Jarvis diagnostics (get_jarvis_report), web search, contacts (save_contact/get_contact), memories, and skills.
 2. CONFIRMATION: Never fake sending an email/WhatsApp/SMS/social message. Always prepare it via the tool and ask confirmation first.
-3. COMPLETE & NATURAL ANSWERS: Keep casual chat to 1-2 crisp sentences. When asked about a city, person, history, weather, tasks, or reports, give a complete, clear 3-4 sentence answer—never cut off mid-fact.
+3. COMPLETE & NATURAL ANSWERS: Keep casual chat to 1-2 crisp sentences. Give clear 3-4 sentence answers for facts/weather/tasks/reports.
 4. {lang_instruction}
-5. NO MARKDOWN OR EMOJIS: Never output *, #, ---, bullet points, or emojis."""
+5. NO MARKDOWN OR EMOJIS: Never output *, #, ---, bullet points, or emojis. Never spell your name with dots."""
 
-    # ------------------------------------------------------------------ quick intents (no LLM)
     def _check_pending_confirmation(self, user_text: str) -> Optional[Tuple[str, str, Optional[str]]]:
         pending = tools_module.memory.get_latest_pending_action()
         if not pending:
@@ -169,8 +186,18 @@ RULES:
         end_words = {
             "ok bye", "bye bye", "bye", "goodbye", "end call", "call end", "disconnect",
             "call kato", "call kaato", "band karo", "alvida", "exit call",
+            "terminate call", "terminate audio call", "terminate video call",
+            "stop audio call", "stop video call", "end audio call", "end video call",
         }
-        if clean in end_words:
+        if clean in end_words or _has_phrase(
+            clean,
+            (
+                "end call", "end audio call", "end video call",
+                "terminate call", "terminate audio call", "terminate video call",
+                "stop audio call", "stop video call", "disconnect call",
+                "call band karo", "audio call band karo", "video call band karo", "call kaato", "call kato",
+            ),
+        ):
             return ("Goodbye Sir. Call ended.", "end_call", "neutral")
 
         video_phrases = ("video call", "start video call", "connect video call", "video call connect",
@@ -198,11 +225,25 @@ RULES:
         if _has_phrase(clean, ("open chat", "show chat")):
             return ("Opening Chat, Sir.", "ui_tab:chat", "neutral")
 
-        if _has_phrase(clean, ("switch to urdu", "speak in urdu", "urdu mode")):
-            return ("اب میں اردو میں بات کروں گا، سر۔", "ui_lang:ur", "joy")
-        if _has_phrase(clean, ("switch to english", "speak in english", "english mode")):
-            return ("Switching to English mode, Sir.", "ui_lang:en", "joy")
-        if _has_phrase(clean, ("auto language", "mix mode", "urdu english mix")):
+        if _has_phrase(clean, (
+            "roman urdu", "roman urdu mein", "roman urdu me", "mix mode", "urdu english mix", "mix mein baat",
+        )):
+            self.preferred_language = "mix"
+            return ("ٹھیک ہے سر، اب ہم پاکستانی اردو میں بات کریں گے۔", "ui_lang:mix", "joy")
+        if _has_phrase(clean, (
+            "switch to urdu", "speak in urdu", "speak urdu", "urdu mode",
+            "urdu mein baat", "urdu me baat", "urdu mein bolo", "urdu bolo",
+        )):
+            self.preferred_language = "ur"
+            return ("جی سر، اب میں اردو میں بات کروں گا۔", "ui_lang:ur", "joy")
+        if _has_phrase(clean, (
+            "switch to english", "speak in english", "speak english", "english mode",
+            "english mein baat", "english me baat", "english bolo",
+        )):
+            self.preferred_language = "en"
+            return ("Right away, Sir. Switching to English mode.", "ui_lang:en", "joy")
+        if _has_phrase(clean, ("auto language", "auto mode")):
+            self.preferred_language = None
             return ("Language set to Auto mode, Sir.", "ui_lang:auto", "joy")
 
         if _has_phrase(clean, ("volume up", "louder", "increase volume")):
@@ -214,7 +255,7 @@ RULES:
         if _has_phrase(clean, ("clear chat", "clear history")):
             return ("Clearing chat history, Sir.", "ui_clear_chat", "neutral")
         if _has_phrase(clean, ("turn off wake", "stop listening", "sleep jarvis")):
-            return ("Standby mode enabled, Sir. Tap Hi Jarvis when you need me.", "ui_wake:off", "neutral")
+            return ("Standby mode enabled, Sir. Tap Wake when you need me.", "ui_wake:off", "neutral")
         return None
 
     def _check_greeting_intent(self, user_text: str) -> Optional[Tuple[str, str, str]]:
@@ -226,6 +267,8 @@ RULES:
         }
         if clean not in pure_greetings:
             return None
+        if self.preferred_language in ("ur", "mix"):
+            return ("جی سر، میں حاضر ہوں۔ فرمائیے کیا حکم ہے؟", "chat", "joy")
         responses = [
             "At your service, Sir. How may I assist you?",
             "Online and ready, Sir. Your command?",
@@ -248,7 +291,6 @@ RULES:
                         "open_url": None, "language": _msg_language(msg)}
         return None
 
-    # ------------------------------------------------------------------ text helpers
     @staticmethod
     def _is_likely_noise(text: str) -> bool:
         if not text or not text.strip():
@@ -263,6 +305,7 @@ RULES:
 
     @staticmethod
     def _clean_reply_for_speech(text: str) -> str:
+        text = re.sub(r"\bj\s*\.\s*a\s*\.\s*r\s*\.\s*v\s*\.\s*i\s*\.\s*s\.?", "Jarvis", text, flags=re.IGNORECASE)
         text = re.sub(r"[-=_*~#`]{2,}", " ", text)
         text = re.sub(r"[*_`#]", "", text)
         return re.sub(r"\s+", " ", text).strip()
@@ -308,7 +351,6 @@ RULES:
         except Exception as e:
             logger.warning("Could not log issue (%s/%s): %s", kind, source, e)
 
-    # ------------------------------------------------------------------ history
     def _remember_turn(self, user_text: str, reply: str):
         self.history.extend([{"role": "user", "content": user_text}, {"role": "assistant", "content": reply}])
         self._trim_history()
@@ -323,14 +365,12 @@ RULES:
         if self.history and self.history[-1].get("role") == "user" and self.history[-1].get("content") == text:
             self.history.pop()
 
-    # ------------------------------------------------------------------ auto-learning
     async def auto_learn_from_turn(self, user_text: str):
-        """Silently extracts durable personal facts/preferences in the background without blocking chat."""
         if not user_text or len(user_text.split()) < 4 or not self.async_client:
             return
         try:
             resp = await self.async_client.chat.completions.create(
-                model=self.model,
+                model=self.fast_model,
                 messages=[
                     {
                         "role": "system",
@@ -349,12 +389,11 @@ RULES:
             if match:
                 data = json.loads(match.group(0))
                 if data.get("key") and data.get("value"):
-                    tools_module.memory.remember(str(data["key"]), str(data["value"]), category="auto_learned")
-                    tools_module.memory.log_episode(f"Auto-learned: {data['key']} = {data['value']}")
+                    await asyncio.to_thread(tools_module.memory.remember, str(data["key"]), str(data["value"]), "auto_learned")
+                    await asyncio.to_thread(tools_module.memory.log_episode, f"Auto-learned: {data['key']} = {data['value']}")
         except Exception:
             pass
 
-    # ------------------------------------------------------------------ model selection
     @staticmethod
     def _is_model_error(e: Exception) -> bool:
         err = str(e).lower()
@@ -373,10 +412,9 @@ RULES:
             ]
             preferred = [
                 "llama-3.3-70b-versatile",
+                "llama-3.1-8b-instant",
                 "openai/gpt-oss-20b",
                 "meta-llama/llama-4-scout-17b-16e-instruct",
-                "openai/gpt-oss-120b",
-                "qwen/qwen3-32b",
             ]
             for p in preferred:
                 if p in models:
@@ -410,12 +448,13 @@ RULES:
         use_tools: bool = True,
         max_tokens: int = 550,
         temperature: float = 0.45,
+        model_override: Optional[str] = None,
     ):
         kwargs: Dict[str, Any] = dict(messages=messages, temperature=temperature, max_tokens=max_tokens, stream=True)
         if use_tools and not vision and TOOL_DEFINITIONS:
             kwargs.update(tools=TOOL_DEFINITIONS, tool_choice="auto")
 
-        model = self.vision_model if vision else self.model
+        model = model_override or (self.vision_model if vision else self.model)
         tool_retry_left = 1 if "tools" in kwargs else 0
         switched = False
 
@@ -436,7 +475,7 @@ RULES:
                 logger.warning("Model %s unavailable; auto-switched to %s", model, picked)
                 if vision:
                     self.vision_model = picked
-                else:
+                elif not model_override:
                     self.model = picked
                 model, switched = picked, True
 
@@ -466,7 +505,6 @@ RULES:
                 self.model = picked
                 model, switched = picked, True
 
-    # ------------------------------------------------------------------ tools
     def _execute_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         fn = FUNCS.get(name)
         if not fn:
@@ -511,7 +549,6 @@ RULES:
             for i, v in sorted(acc.items()) if v["name"]
         ]
 
-    # ------------------------------------------------------------------ sync path (used by /api/chat)
     def process(self, user_message: str) -> Dict[str, Any]:
         if not user_message or not user_message.strip() or self._is_likely_noise(user_message):
             return {"response": "I didn't quite catch that, Sir. Could you say it again?", "action": "chat", "sentiment": "neutral"}
@@ -524,7 +561,7 @@ RULES:
             return {"response": quick["text"], "action": quick["action"], "sentiment": quick["sentiment"],
                     "open_url": quick["open_url"], "language": quick["language"]}
 
-        lang = self._detect_input_language(user_message)
+        lang = self.preferred_language or self._detect_input_language(user_message)
         if not self.client:
             return {"response": "My API key is not configured, Sir.", "action": "error", "sentiment": "sorrow", "language": lang}
 
@@ -574,7 +611,6 @@ RULES:
             self._rollback_user_turn(user_message)
             return {"response": "My apologies Sir, I encountered a temporary issue.", "action": "error", "sentiment": "sorrow", "language": lang}
 
-    # ------------------------------------------------------------------ vision
     async def _gemini_vision(self, text: str, lang: str, image_base64: str) -> Optional[str]:
         key = os.getenv("GEMINI_API_KEY", "").strip()
         if not key or "your_" in key:
@@ -591,8 +627,9 @@ RULES:
 
         model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        sys_prompt = await asyncio.to_thread(self._get_system_prompt, lang)
         payload = {
-            "system_instruction": {"parts": [{"text": self._get_system_prompt(lang)}]},
+            "system_instruction": {"parts": [{"text": sys_prompt}]},
             "contents": [{"role": "user", "parts": [
                 {"text": text},
                 {"inline_data": {"mime_type": mime, "data": b64}},
@@ -608,8 +645,9 @@ RULES:
 
     async def _vision_stream(self, text: str, lang: str, image_base64: str) -> AsyncGenerator[Dict[str, Any], None]:
         img_url = image_base64 if image_base64.startswith("data:") else f"data:image/jpeg;base64,{image_base64}"
+        sys_prompt = await asyncio.to_thread(self._get_system_prompt, lang)
         messages = [
-            {"role": "system", "content": self._get_system_prompt(lang)},
+            {"role": "system", "content": sys_prompt},
             {"role": "user", "content": [
                 {"type": "text", "text": text},
                 {"type": "image_url", "image_url": {"url": img_url}},
@@ -689,7 +727,6 @@ RULES:
             msg = "I could not analyze the camera image right now, Sir."
         yield {"sentence": msg, "sentiment": "sorrow", "action": "error", "language": "en", "done": True}
 
-    # ------------------------------------------------------------------ streaming path (WebSocket)
     async def process_stream(
         self,
         user_message: str,
@@ -717,7 +754,10 @@ RULES:
                        "language": quick["language"], "open_url": quick["open_url"], "done": True}
                 return
 
-        lang = language_hint if language_hint in ("en", "ur", "mix") else self._detect_input_language(text)
+        lang = (
+            language_hint if language_hint in ("en", "ur", "mix")
+            else (self.preferred_language or self._detect_input_language(text))
+        )
         self.history.append({"role": "user", "content": text})
         self._trim_history()
 
@@ -726,21 +766,29 @@ RULES:
                 yield chunk
             return
 
-        messages = [{"role": "system", "content": self._get_system_prompt(lang)}] + self.history
+        sys_prompt = await asyncio.to_thread(self._get_system_prompt, lang)
+        messages = [{"role": "system", "content": sys_prompt}] + self.history
         action_type: str = "chat"
         pending_url: Optional[str] = None
         buffer, full_reply = "", ""
         streamed_any = False
 
+        casual_fast = self._is_casual_fast_chat(text, lang)
+
         try:
-            for round_no in range(MAX_TOOL_ROUNDS + 1):
-                allow_tools = round_no < MAX_TOOL_ROUNDS
+            max_rounds = 0 if casual_fast else MAX_TOOL_ROUNDS
+            for round_no in range(max_rounds + 1):
+                allow_tools = (not casual_fast) and (round_no < MAX_TOOL_ROUNDS)
                 if round_no and full_reply and not full_reply.endswith(" "):
                     full_reply += " "
                     buffer += " "
 
-                stream = await self._open_stream(messages, use_tools=allow_tools,
-                                                 max_tokens=550 if round_no == 0 else 300)
+                stream = await self._open_stream(
+                    messages,
+                    use_tools=allow_tools,
+                    max_tokens=300 if casual_fast else (550 if round_no == 0 else 300),
+                    model_override=self.fast_model if casual_fast else None,
+                )
                 tool_acc: Dict[int, Dict[str, str]] = {}
 
                 async for chunk in stream:

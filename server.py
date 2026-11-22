@@ -31,9 +31,7 @@ logger = logging.getLogger("JarvisServer")
 
 MAIN_LOOP: Optional[asyncio.AbstractEventLoop] = None
 
-# ------------------------------------------------------------------ PIN auth (optional: set JARVIS_PIN in .env)
 JARVIS_PIN = os.getenv("JARVIS_PIN", "").strip()
-# Set AUTH_SECRET in .env to a long random string; otherwise the key is derived from the PIN (weaker).
 _AUTH_KEY = hashlib.sha256(
     (os.getenv("AUTH_SECRET") or f"jarvis-pin-secret-{JARVIS_PIN}").encode("utf-8")
 ).digest()
@@ -48,7 +46,7 @@ INTRO_GREETINGS = [
     "Standing by for your command, Sir.",
 ]
 
-_BG_TASKS: Set[asyncio.Task] = set()  # keep references so background tasks are not garbage collected
+_BG_TASKS: Set[asyncio.Task] = set()
 
 
 def get_random_greeting() -> str:
@@ -99,7 +97,6 @@ def require_auth(request: Request):
 
 
 def _check_login_rate_limit(ip: str):
-    """Block an IP after LOGIN_MAX_ATTEMPTS wrong PINs inside the time window."""
     now = time.time()
     recent = [t for t in _LOGIN_ATTEMPTS.get(ip, []) if now - t < LOGIN_WINDOW_SECS]
     _LOGIN_ATTEMPTS[ip] = recent
@@ -111,7 +108,6 @@ def _record_login_failure(ip: str):
     _LOGIN_ATTEMPTS.setdefault(ip, []).append(time.time())
 
 
-# ------------------------------------------------------------------ connection manager
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Set[WebSocket] = set()
@@ -163,7 +159,6 @@ def broadcast_from_thread(coro):
     return None
 
 
-# ------------------------------------------------------------------ reminders (pre-reminder + due-time)
 async def _announce_reminder(text: str, sentiment: str):
     audio_bytes = await voice.generate_tts_bytes(text, language="en")
     b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else None
@@ -172,23 +167,31 @@ async def _announce_reminder(text: str, sentiment: str):
 
 
 async def reminder_scheduler_loop():
-    """Sends an early heads-up (default 15 min before) AND the exact due-time reminder."""
-    logger.info("Proactive task reminder & pre-reminder scheduler started.")
+    """Sends 30-min warning, 5-min warning, and exact due-time reminder."""
+    logger.info("Proactive task reminder & 30m/5m pre-reminder scheduler started.")
     while True:
         try:
-            buckets = memory.get_upcoming_and_due_reminders()
+            buckets = await asyncio.to_thread(memory.get_upcoming_and_due_reminders)
 
-            for item in buckets["pre_due"]:
-                memory.mark_todo_pre_reminded(item["id"])
-                mins = int(item.get("mins_left") or item.get("remind_before_mins") or 15)
-                unit = "minute" if mins == 1 else "minutes"
+            for item in buckets["pre_30"]:
+                await asyncio.to_thread(memory.mark_todo_pre_reminded_30, item["id"])
+                mins = int(item.get("mins_left") or 30)
                 readable = tools.format_due_readable(item.get("due_time"))
                 await _announce_reminder(
-                    f"Sir, upcoming task in {mins} {unit}: {item['task']} ({readable}).", "neutral"
+                    f"Sir, reminder: in {mins} minutes you have {item['task']} ({readable}).", "neutral"
+                )
+
+            for item in buckets["pre_5"]:
+                await asyncio.to_thread(memory.mark_todo_pre_reminded_5, item["id"])
+                mins = int(item.get("mins_left") or 5)
+                readable = tools.format_due_readable(item.get("due_time"))
+                await _announce_reminder(
+                    f"Sir, 5 minute alert: {item['task']} starts in {mins} minutes ({readable}).", "neutral"
                 )
 
             for item in buckets["due_now"]:
-                memory.mark_todo_reminded(
+                await asyncio.to_thread(
+                    memory.mark_todo_reminded,
                     item["id"],
                     recurrence=item.get("recurrence", "once"),
                     current_due=item.get("due_time"),
@@ -199,8 +202,17 @@ async def reminder_scheduler_loop():
             break
         except Exception as e:
             logger.error("Reminder scheduler error: %s", e)
-            memory.log_issue("scheduler_error", "reminders", str(e))
+            await asyncio.to_thread(memory.log_issue, "scheduler_error", "reminders", str(e))
         await asyncio.sleep(15)
+
+
+async def _prewarm_assets():
+    try:
+        await asyncio.to_thread(memory.get_system_prompt_context)
+        for phrase in ("Done, Sir.", "Right away, Sir.", "Audio system online, Sir. Speaker volume is optimal."):
+            await voice.generate_tts_bytes(phrase, language="en")
+    except Exception:
+        pass
 
 
 @asynccontextmanager
@@ -208,6 +220,7 @@ async def lifespan(app: FastAPI):
     global MAIN_LOOP
     MAIN_LOOP = asyncio.get_running_loop()
     scheduler_task = asyncio.create_task(reminder_scheduler_loop())
+    _spawn_background(_prewarm_assets())
     try:
         yield
     finally:
@@ -218,7 +231,7 @@ async def lifespan(app: FastAPI):
             pass
 
 
-app = FastAPI(title="Jarvis AI Assistant", version="2.5.1-enterprise", lifespan=lifespan)
+app = FastAPI(title="Jarvis AI Assistant", version="2.5.2-enterprise", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -250,7 +263,6 @@ app.mount("/face", StaticFiles(directory=FACE_DIR, html=True), name="face")
 app.mount("/cache", StaticFiles(directory=CACHE_DIR), name="cache")
 
 
-# ------------------------------------------------------------------ request models
 class LoginRequest(BaseModel):
     pin: str
 
@@ -270,7 +282,7 @@ class TodoCreateRequest(BaseModel):
     task: str
     due_time: Optional[str] = None
     recurrence: str = "once"
-    remind_before_mins: int = 15
+    remind_before_mins: int = 30
 
 
 class ContactRequest(BaseModel):
@@ -285,7 +297,6 @@ class ContactRequest(BaseModel):
     notes: str = ""
 
 
-# ------------------------------------------------------------------ auth endpoints
 @app.get("/api/auth/status")
 async def auth_status(request: Request):
     tok = _extract_token_from_request(request)
@@ -300,7 +311,7 @@ async def auth_login(req: LoginRequest, request: Request, response: Response):
     _check_login_rate_limit(ip)
     if not hmac.compare_digest(req.pin.strip().encode("utf-8"), JARVIS_PIN.encode("utf-8")):
         _record_login_failure(ip)
-        memory.log_issue("login_failed", "auth", "Wrong PIN attempt")
+        await asyncio.to_thread(memory.log_issue, "login_failed", "auth", "Wrong PIN attempt")
         raise HTTPException(status_code=401, detail="Invalid PIN")
     _LOGIN_ATTEMPTS.pop(ip, None)
     token = _make_auth_token()
@@ -317,7 +328,6 @@ async def auth_logout(response: Response):
     return {"authenticated": False}
 
 
-# ------------------------------------------------------------------ streaming reply pipeline
 async def process_user_message(
     websocket: WebSocket,
     user_text: str,
@@ -325,27 +335,33 @@ async def process_user_message(
     language: Optional[str] = None,
     image_base64: Optional[str] = None,
 ):
-    """LLM sentence stream -> parallel TTS -> WebSocket, preserving sentence order."""
     started_at = time.perf_counter()
     await manager.set_state("thinking", text=user_text)
-    memory.save_chat_message("user", user_text or "[camera image]")
+    await asyncio.to_thread(memory.save_chat_message, "user", user_text or "[camera image]")
 
     tts_queue: asyncio.Queue = asyncio.Queue()
     SENTINEL = object()
     collected_reply: List[str] = []
     last_open_url = None
+    ws_lock = asyncio.Lock()
+
+    async def _send_ws(payload: Dict[str, Any]):
+        async with ws_lock:
+            await websocket.send_json(payload)
 
     async def _safe_tts(text_seg: str, lang_hint: Optional[str]):
         try:
             return await asyncio.wait_for(
                 voice.generate_tts_segments(text_seg, language_hint=lang_hint),
-                timeout=6.0,
+                timeout=12.0,
             )
         except Exception as e:
-            memory.log_issue("tts_timeout", "tts", f"TTS failed/timed out: {e}")
+            await asyncio.to_thread(memory.log_issue, "tts_timeout", "tts", f"TTS failed/timed out: {e}")
             return []
 
     async def llm_producer():
+        nonlocal last_open_url
+        preview_idx = 0
         try:
             async for chunk in ai_client.jarvis_ai.process_stream(
                 user_text, language_hint=language, image_base64=image_base64
@@ -353,19 +369,32 @@ async def process_user_message(
                 sent = chunk.get("sentence", "").strip()
                 if not sent:
                     continue
+                is_first = (preview_idx == 0)
+                preview_idx += 1
+                open_url = chunk.get("open_url")
+                if open_url:
+                    last_open_url = open_url
+                await _send_ws({
+                    "type": "text_preview",
+                    "request_id": request_id,
+                    "text": sent,
+                    "is_first_sentence": is_first,
+                    "sentiment": chunk.get("sentiment", "neutral"),
+                    "action": chunk.get("action", "chat"),
+                    "open_url": open_url,
+                })
                 tts_task = asyncio.create_task(_safe_tts(sent, chunk.get("language")))
-                await tts_queue.put((chunk, tts_task))
+                await tts_queue.put((chunk, tts_task, is_first))
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.error("LLM stream error: %s", e)
-            memory.log_issue("llm_stream_error", "server", str(e))
+            await asyncio.to_thread(memory.log_issue, "llm_stream_error", "server", str(e))
         finally:
             await tts_queue.put(SENTINEL)
 
     producer_task = asyncio.create_task(llm_producer())
     first_audio_sent = False
-    sentence_index = 0
 
     try:
         while True:
@@ -373,52 +402,59 @@ async def process_user_message(
             if item is SENTINEL:
                 break
 
-            chunk, tts_task = item
+            chunk, tts_task, is_first_sentence = item
             segments = await tts_task
             full_sent = chunk["sentence"]
             collected_reply.append(full_sent)
             sentiment = chunk.get("sentiment", "neutral")
             action = chunk.get("action", "chat")
-            open_url = chunk.get("open_url")
-            if open_url:
-                last_open_url = open_url
-            is_first_sentence = (sentence_index == 0)
-            sentence_index += 1
 
             if not first_audio_sent:
                 first_audio_sent = True
                 total_ms = int((time.perf_counter() - started_at) * 1000)
                 logger.info("[LATENCY] End-to-first-audio: %d ms", total_ms)
                 if total_ms > 5500:
-                    memory.log_issue("high_latency", "pipeline", f"Slow response ({total_ms} ms) for: {(user_text or '')[:60]}", latency_ms=total_ms)
+                    await asyncio.to_thread(
+                        memory.log_issue,
+                        "high_latency",
+                        "pipeline",
+                        f"Slow response ({total_ms} ms) for: {(user_text or '')[:60]}",
+                        latency_ms=total_ms,
+                    )
                 await manager.set_state("speaking", sentiment=sentiment, text=full_sent)
 
             if segments:
                 for idx, (seg_text, audio_data) in enumerate(segments):
-                    await websocket.send_json({
+                    await _send_ws({
                         "type": "audio_sentence",
                         "request_id": request_id,
                         "text": full_sent if idx == 0 else "",
+                        "text_already_shown": True,
                         "is_first_sentence": is_first_sentence and idx == 0,
                         "spoken_segment": seg_text,
                         "audio_base64": base64.b64encode(audio_data).decode("utf-8"),
                         "sentiment": sentiment,
                         "action": action,
-                        "open_url": open_url if idx == 0 else None,
+                        "open_url": None,
                     })
             else:
-                await websocket.send_json({
+                await _send_ws({
                     "type": "response",
                     "request_id": request_id,
                     "text": full_sent,
+                    "text_already_shown": True,
                     "is_first_sentence": is_first_sentence,
                     "sentiment": sentiment,
                     "action": action,
-                    "open_url": open_url,
+                    "open_url": None,
                 })
 
+        await _send_ws({"type": "stream_done", "request_id": request_id, "done": True})
+
         if collected_reply:
-            memory.save_chat_message("assistant", " ".join(collected_reply), action_url=last_open_url)
+            await asyncio.to_thread(
+                memory.save_chat_message, "assistant", " ".join(collected_reply), action_url=last_open_url
+            )
             if user_text and not image_base64:
                 _spawn_background(ai_client.jarvis_ai.auto_learn_from_turn(user_text))
     except asyncio.CancelledError:
@@ -427,7 +463,6 @@ async def process_user_message(
     finally:
         if not producer_task.done():
             producer_task.cancel()
-        # Cancel TTS jobs that were queued but never consumed (interrupt / disconnect).
         while not tts_queue.empty():
             try:
                 queued = tts_queue.get_nowait()
@@ -437,12 +472,10 @@ async def process_user_message(
                 queued[1].cancel()
 
 
-# ------------------------------------------------------------------ dashboard & data API
-@app.get("/api/dashboard", dependencies=[Depends(require_auth)])
-async def get_dashboard():
+def _build_dashboard_payload() -> Dict[str, Any]:
     pending = memory.get_todos("pending")
     for idx, t in enumerate(pending, 1):
-        t["number"] = idx  # the number the user says: "complete task 2"
+        t["number"] = idx
         t["due_readable"] = tools.format_due_readable(t.get("due_time"))
     completed = memory.get_completed_history(30)
     for c in completed:
@@ -463,9 +496,14 @@ async def get_dashboard():
     }
 
 
+@app.get("/api/dashboard", dependencies=[Depends(require_auth)])
+async def get_dashboard():
+    return await asyncio.to_thread(_build_dashboard_payload)
+
+
 @app.post("/api/chat/clear", dependencies=[Depends(require_auth)])
 async def clear_chat_history():
-    memory.clear_chat_messages()
+    await asyncio.to_thread(memory.clear_chat_messages)
     ai_client.jarvis_ai.reset()
     return {"status": "cleared"}
 
@@ -476,7 +514,6 @@ async def voice_note(file: UploadFile = File(...), language: Optional[str] = Non
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Empty voice note")
     lang_hint = language if language in ("en", "ur") else None
-    # Blocking network call -> worker thread keeps the event loop responsive.
     text = await asyncio.to_thread(
         voice.transcribe_audio_groq,
         audio_bytes,
@@ -484,7 +521,7 @@ async def voice_note(file: UploadFile = File(...), language: Optional[str] = Non
         language=lang_hint,
     )
     if not text:
-        memory.log_issue("stt_empty", "whisper", "Voice note could not be transcribed")
+        await asyncio.to_thread(memory.log_issue, "stt_empty", "whisper", "Voice note could not be transcribed")
         raise HTTPException(status_code=422, detail="Voice note could not be transcribed")
     return {"text": text}
 
@@ -493,24 +530,27 @@ async def voice_note(file: UploadFile = File(...), language: Optional[str] = Non
 async def create_todo(req: TodoCreateRequest):
     if not req.task.strip():
         raise HTTPException(status_code=400, detail="Task cannot be empty")
-    return tools.add_todo(req.task.strip(), due_time=req.due_time, recurrence=req.recurrence, remind_before_mins=req.remind_before_mins)
+    return await asyncio.to_thread(
+        tools.add_todo, req.task.strip(), due_time=req.due_time, recurrence=req.recurrence, remind_before_mins=req.remind_before_mins
+    )
 
 
 @app.post("/api/todos/{todo_id}/complete", dependencies=[Depends(require_auth)])
 async def complete_todo_api(todo_id: int):
-    return tools.complete_todo(todo_id=todo_id)  # todo_id here is the real database id
+    return await asyncio.to_thread(tools.complete_todo, todo_id=todo_id)
 
 
 @app.delete("/api/todos/{todo_id}", dependencies=[Depends(require_auth)])
 async def delete_todo_api(todo_id: int):
-    return {"deleted": memory.delete_todo(todo_id)}
+    return {"deleted": await asyncio.to_thread(memory.delete_todo, todo_id)}
 
 
 @app.post("/api/contacts", dependencies=[Depends(require_auth)])
 async def create_contact_api(req: ContactRequest):
     if not req.name.strip():
         raise HTTPException(status_code=400, detail="Contact name required")
-    return tools.save_contact(
+    return await asyncio.to_thread(
+        tools.save_contact,
         name=req.name, phone=req.phone, email=req.email,
         instagram=req.instagram, facebook=req.facebook, tiktok=req.tiktok,
         twitter=req.twitter, linkedin=req.linkedin, notes=req.notes,
@@ -519,7 +559,7 @@ async def create_contact_api(req: ContactRequest):
 
 @app.put("/api/contacts/{contact_key}", dependencies=[Depends(require_auth)])
 async def update_contact_api(contact_key: str, req: ContactRequest):
-    updated = memory.update_contact_by_key(contact_key, req.model_dump())
+    updated = await asyncio.to_thread(memory.update_contact_by_key, contact_key, req.model_dump())
     if not updated:
         raise HTTPException(status_code=404, detail="Contact not found")
     return {"status": "updated", "contact": updated}
@@ -527,7 +567,7 @@ async def update_contact_api(contact_key: str, req: ContactRequest):
 
 @app.delete("/api/contacts/{contact_key}", dependencies=[Depends(require_auth)])
 async def delete_contact_api(contact_key: str):
-    return {"deleted": memory.delete_contact(contact_key)}
+    return {"deleted": await asyncio.to_thread(memory.delete_contact, contact_key)}
 
 
 @app.post("/api/contacts/import", dependencies=[Depends(require_auth)])
@@ -536,16 +576,15 @@ async def import_contacts_vcf(file: UploadFile = File(...)):
     if not raw:
         raise HTTPException(status_code=400, detail="Empty VCF file")
     text = raw.decode("utf-8", errors="ignore")
-    count = tools.import_vcf_contacts(text)
+    count = await asyncio.to_thread(tools.import_vcf_contacts, text)
     return {"imported": count, "message": f"Imported {count} contacts successfully."}
 
 
 @app.post("/api/issues/{issue_id}/resolve", dependencies=[Depends(require_auth)])
 async def resolve_issue_api(issue_id: int):
-    return {"resolved": memory.resolve_issue(issue_id)}
+    return {"resolved": await asyncio.to_thread(memory.resolve_issue, issue_id)}
 
 
-# ------------------------------------------------------------------ misc
 @app.get("/favicon.ico", include_in_schema=False)
 @app.get("/favicon.jpg", include_in_schema=False)
 async def favicon():
@@ -589,7 +628,6 @@ async def api_chat(req: ChatRequest):
     return ChatResponse(reply=reply, sentiment=sentiment, audio_base64=audio_b64)
 
 
-# ------------------------------------------------------------------ WebSocket
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     tok = websocket.cookies.get("jarvis_auth") or websocket.query_params.get("token")
@@ -611,7 +649,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if msg_type == "user_message":
                 user_text = (payload.get("text") or "").strip()
-                image_base64 = payload.get("image_base64")  # camera frame (data URL or raw base64)
+                image_base64 = payload.get("image_base64")
                 if not user_text and not image_base64:
                     continue
                 if active_response_task and not active_response_task.done():
@@ -664,7 +702,8 @@ async def websocket_endpoint(websocket: WebSocket):
 
             elif msg_type == "intro_greeting":
                 greeting = get_random_greeting()
-                pending_count = len(memory.get_todos("pending"))
+                pending_todos = await asyncio.to_thread(memory.get_todos, "pending")
+                pending_count = len(pending_todos)
                 if pending_count > 0:
                     greeting += f" You have {pending_count} pending {'task' if pending_count == 1 else 'tasks'} today."
                 audio_bytes = await voice.generate_tts_bytes(greeting, language="en")
