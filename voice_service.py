@@ -265,10 +265,19 @@ def get_groq_client() -> Groq:
     return _groq_client
 
 
+_WHISPER_HALLUCINATIONS = {
+    "transcribe accurately in english, urdu, or roman urdu for jarvis assistant.",
+    "transcribe in english, urdu, or roman urdu.",
+    "thank you.", "thanks for watching.", "the the", "you", "okay.", "bye.", ".",
+}
+
+
 def transcribe_audio_groq(audio_file_path_or_bytes, mime_type: str = "audio/wav", language: Optional[str] = None) -> str:
     try:
         client = get_groq_client()
         if isinstance(audio_file_path_or_bytes, bytes):
+            if len(audio_file_path_or_bytes) < 2500:
+                return ""
             file_obj = ("audio.wav", audio_file_path_or_bytes, mime_type)
         else:
             file_obj = open(audio_file_path_or_bytes, "rb")
@@ -278,7 +287,6 @@ def transcribe_audio_groq(audio_file_path_or_bytes, mime_type: str = "audio/wav"
             file=file_obj,
             response_format="text",
             temperature=0.0,
-            prompt="Transcribe accurately in English, Urdu, or Roman Urdu for JARVIS assistant.",
         )
         if language in ("en", "ur"):
             kwargs["language"] = language
@@ -286,7 +294,10 @@ def transcribe_audio_groq(audio_file_path_or_bytes, mime_type: str = "audio/wav"
         transcription = client.audio.transcriptions.create(**kwargs)
         if hasattr(file_obj, "close"):
             file_obj.close()
-        return transcription.strip() if isinstance(transcription, str) else str(transcription).strip()
+        result = transcription.strip() if isinstance(transcription, str) else str(transcription).strip()
+        if result.lower() in _WHISPER_HALLUCINATIONS:
+            return ""
+        return result
     except Exception as e:
         logger.error("Groq Whisper STT failed: %s", e)
         return ""
