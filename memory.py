@@ -134,6 +134,16 @@ class MemoryManager:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            # Persistent chat history
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS chat_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    action_url TEXT DEFAULT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             conn.commit()
             logger.info("SQLite database verified at %s", self.db_path)
 
@@ -427,6 +437,38 @@ class MemoryManager:
             cursor.execute("UPDATE pending_actions SET status = ? WHERE id = ?", (status, action_id))
             conn.commit()
             return cursor.rowcount > 0
+# ------------------ Persistent Chat History ------------------
+    def save_chat_message(self, role: str, content: str, action_url: Optional[str] = None) -> int:
+        if not content or not content.strip():
+            return 0
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO chat_messages (role, content, action_url) VALUES (?, ?, ?)",
+                (role.strip(), content.strip(), action_url),
+            )
+            conn.commit()
+            return cursor.lastrowid
 
+    def get_recent_chat_messages(self, limit: int = 30) -> List[Dict[str, Any]]:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, role, content, action_url, created_at
+                FROM chat_messages
+                ORDER BY id DESC LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = [dict(r) for r in cursor.fetchall()]
+            rows.reverse()
+            return rows
+
+    def clear_chat_messages(self) -> None:
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM chat_messages")
+            conn.commit()
 
 memory = MemoryManager()

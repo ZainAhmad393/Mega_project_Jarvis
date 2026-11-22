@@ -1,4 +1,6 @@
 import os
+import hmac
+import hashlib
 import base64
 import json
 import logging
@@ -8,7 +10,7 @@ import random
 import uuid
 from contextlib import asynccontextmanager
 from typing import Set, Dict, Any, Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Request, Response, Depends
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,6 +30,10 @@ logging.basicConfig(
 logger = logging.getLogger("JarvisServer")
 
 MAIN_LOOP: Optional[asyncio.AbstractEventLoop] = None
+JARVIS_PIN = os.getenv("JARVIS_PIN", "").strip()
+_AUTH_KEY = hashlib.sha256(
+    (os.getenv("AUTH_SECRET") or f"jarvis-pin-secret-{JARVIS_PIN}").encode("utf-8")
+).digest()
 
 INTRO_GREETINGS = [
     "Good day, Sir. Jarvis is online and ready. How may I assist you?",
@@ -41,6 +47,42 @@ def get_random_greeting() -> str:
     return random.choice(INTRO_GREETINGS)
 
 
+def _make_auth_token() -> str:
+    exp = str(int(time.time()) + 30 * 24 * 3600)
+    sig = hmac.new(_AUTH_KEY, exp.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{exp}.{sig}"
+
+
+def _verify_auth_token(token: Optional[str]) -> bool:
+    if not JARVIS_PIN:
+        return True
+    if not token or "." not in token:
+        return False
+    try:
+        exp_str, sig = token.split(".", 1)
+        if int(exp_str) < int(time.time()):
+            return False
+        expected = hmac.new(_AUTH_KEY, exp_str.encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(sig, expected)
+    except Exception:
+        return False
+
+
+def _extract_token_from_request(request: Request) -> Optional[str]:
+    cookie_tok = request.cookies.get("jarvis_auth")
+    if cookie_tok:
+        return cookie_tok
+    auth_hdr = request.headers.get("Authorization", "")
+    if auth_hdr.startswith("Bearer "):
+        return auth_hdr[7:].strip()
+    return None
+
+
+def require_auth(request: Request):
+    if not _verify_auth_token(_extract_token_from_request(request)):
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Set[WebSocket] = set()
@@ -51,12 +93,11 @@ class ConnectionManager:
         await websocket.accept()
         self.active_connections.add(websocket)
         logger.info("Client connected. Total clients: %d", len(self.active_connections))
-        payload = {
+        await websocket.send_json({
             "type": "state",
             "state": self.current_state,
             "sentiment": self.current_sentiment,
-        }
-        await websocket.send_json(payload)
+        })
 
     def disconnect(self, websocket: WebSocket):
         self.active_connections.discard(websocket)
@@ -105,17 +146,15 @@ async def reminder_scheduler_loop():
                     current_due=item.get("due_time"),
                 )
                 reminder_text = f"Sir, this is your scheduled reminder: {item['task']}."
-                logger.info("Firing reminder #%s: %s", item["id"], item["task"])
                 audio_bytes = await voice.generate_tts_bytes(reminder_text, language="en")
                 b64 = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else None
                 await manager.set_state("speaking", sentiment="joy", text=reminder_text)
-                payload = {
+                await manager.broadcast({
                     "type": "reminder",
                     "text": reminder_text,
                     "audio_base64": b64,
                     "sentiment": "joy",
-                }
-                await manager.broadcast(payload)
+                })
         except asyncio.CancelledError:
             break
         except Exception as e:
@@ -138,7 +177,7 @@ async def lifespan(app: FastAPI):
             pass
 
 
-app = FastAPI(title="Jarvis AI Assistant", version="2.3.0-enterprise", lifespan=lifespan)
+app = FastAPI(title="Jarvis AI Assistant", version="2.4.0-enterprise", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -170,6 +209,10 @@ app.mount("/face", StaticFiles(directory=FACE_DIR, html=True), name="face")
 app.mount("/cache", StaticFiles(directory=CACHE_DIR), name="cache")
 
 
+class LoginRequest(BaseModel):
+    pin: str
+
+
 class ChatRequest(BaseModel):
     message: str
     language: Optional[str] = "en"
@@ -194,12 +237,50 @@ class ContactCreateRequest(BaseModel):
     notes: str = ""
 
 
-async def process_user_message(websocket: WebSocket, user_text: str, request_id: str, language: Optional[str] = None):
+@app.get("/api/auth/status")
+async def auth_status(request: Request):
+    tok = _extract_token_from_request(request)
+    return {"auth_required": bool(JARVIS_PIN), "authenticated": _verify_auth_token(tok)}
+
+
+@app.post("/api/auth/login")
+async def auth_login(req: LoginRequest, response: Response):
+    if not JARVIS_PIN:
+        return {"authenticated": True, "token": ""}
+    if not hmac.compare_digest(req.pin.strip(), JARVIS_PIN):
+        raise HTTPException(status_code=401, detail="Invalid PIN")
+    token = _make_auth_token()
+    response.set_cookie(
+        key="jarvis_auth",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=30 * 24 * 3600,
+    )
+    return {"authenticated": True, "token": token}
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(response: Response):
+    response.delete_cookie("jarvis_auth")
+    return {"authenticated": False}
+
+
+async def process_user_message(
+    websocket: WebSocket,
+    user_text: str,
+    request_id: str,
+    language: Optional[str] = None,
+    image_base64: Optional[str] = None,
+):
     started_at = time.perf_counter()
     await manager.set_state("thinking", text=user_text)
+    memory.save_chat_message("user", user_text)
 
     tts_queue: asyncio.Queue = asyncio.Queue()
     SENTINEL = object()
+    collected_reply = []
+    last_open_url = None
 
     async def _safe_tts(text_seg: str, lang_hint: Optional[str]):
         try:
@@ -212,7 +293,9 @@ async def process_user_message(websocket: WebSocket, user_text: str, request_id:
 
     async def llm_producer():
         try:
-            async for chunk in ai_client.jarvis_ai.process_stream(user_text, language_hint=language):
+            async for chunk in ai_client.jarvis_ai.process_stream(
+                user_text, language_hint=language, image_base64=image_base64
+            ):
                 sent = chunk.get("sentence", "").strip()
                 if not sent:
                     continue
@@ -238,9 +321,12 @@ async def process_user_message(websocket: WebSocket, user_text: str, request_id:
             chunk, tts_task = item
             segments = await tts_task
             full_sent = chunk["sentence"]
+            collected_reply.append(full_sent)
             sentiment = chunk.get("sentiment", "neutral")
             action = chunk.get("action", "chat")
             open_url = chunk.get("open_url")
+            if open_url:
+                last_open_url = open_url
             is_first_sentence = (sentence_index == 0)
             sentence_index += 1
 
@@ -275,6 +361,9 @@ async def process_user_message(websocket: WebSocket, user_text: str, request_id:
                     "open_url": open_url,
                 }
                 await websocket.send_json(msg_out)
+
+        if collected_reply:
+            memory.save_chat_message("assistant", " ".join(collected_reply), action_url=last_open_url)
     except asyncio.CancelledError:
         producer_task.cancel()
         raise
@@ -282,7 +371,8 @@ async def process_user_message(websocket: WebSocket, user_text: str, request_id:
         if not producer_task.done():
             producer_task.cancel()
 
-@app.post("/api/voice/note")
+
+@app.post("/api/voice/note", dependencies=[Depends(require_auth)])
 async def voice_note(file: UploadFile = File(...), language: Optional[str] = None):
     audio_bytes = await file.read()
     if not audio_bytes:
@@ -294,36 +384,44 @@ async def voice_note(file: UploadFile = File(...), language: Optional[str] = Non
     return {"text": text}
 
 
-@app.get("/api/dashboard")
+@app.get("/api/dashboard", dependencies=[Depends(require_auth)])
 async def get_dashboard():
     return {
         "todos": memory.get_todos("pending"),
         "contacts": memory.list_contacts(),
         "memories": memory.recall(),
         "skills": memory.get_skills(),
+        "chat_history": memory.get_recent_chat_messages(30),
     }
 
 
-@app.post("/api/todos")
+@app.post("/api/chat/clear", dependencies=[Depends(require_auth)])
+async def clear_chat_history():
+    memory.clear_chat_messages()
+    ai_client.jarvis_ai.reset()
+    return {"status": "cleared"}
+
+
+@app.post("/api/todos", dependencies=[Depends(require_auth)])
 async def create_todo(req: TodoCreateRequest):
     if not req.task.strip():
         raise HTTPException(status_code=400, detail="Task cannot be empty")
     return tools.add_todo(req.task.strip(), due_time=req.due_time, recurrence=req.recurrence)
 
 
-@app.post("/api/todos/{todo_id}/complete")
+@app.post("/api/todos/{todo_id}/complete", dependencies=[Depends(require_auth)])
 async def complete_todo_api(todo_id: int):
     return tools.complete_todo(todo_id)
 
 
-@app.post("/api/contacts")
+@app.post("/api/contacts", dependencies=[Depends(require_auth)])
 async def create_contact_api(req: ContactCreateRequest):
     if not req.name.strip():
         raise HTTPException(status_code=400, detail="Contact name required")
     return tools.save_contact(req.name, req.phone, req.email, req.notes)
 
 
-@app.post("/api/contacts/import")
+@app.post("/api/contacts/import", dependencies=[Depends(require_auth)])
 async def import_contacts_vcf(file: UploadFile = File(...)):
     raw = await file.read()
     if not raw:
@@ -357,10 +455,11 @@ async def health():
         "state": manager.current_state,
         "sentiment": manager.current_sentiment,
         "clients": len(manager.active_connections),
+        "db": "postgres" if memory.is_postgres else "sqlite",
     }
 
 
-@app.post("/api/chat", response_model=ChatResponse)
+@app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(require_auth)])
 async def api_chat(req: ChatRequest):
     user_msg = req.message.strip()
     if not user_msg:
@@ -377,6 +476,11 @@ async def api_chat(req: ChatRequest):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    tok = websocket.cookies.get("jarvis_auth") or websocket.query_params.get("token")
+    if not _verify_auth_token(tok):
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
+
     await manager.connect(websocket)
     active_response_task = None
     try:
@@ -398,8 +502,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 request_id = str(payload.get("request_id") or "")
                 lang_val = payload.get("language")
                 language = lang_val if lang_val in ("en", "ur", "mix") else None
+                image_base64 = payload.get("image_base64")
                 active_response_task = asyncio.create_task(
-                    process_user_message(websocket, user_text, request_id, language)
+                    process_user_message(websocket, user_text, request_id, language, image_base64=image_base64)
                 )
 
             elif msg_type == "start_call":
@@ -412,29 +517,27 @@ async def websocket_endpoint(websocket: WebSocket):
                 await manager.set_state("speaking", sentiment="joy", text=announcement)
                 audio_bytes = await voice.generate_tts_bytes(announcement, language="en")
                 b64_audio = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else None
-                out = {
+                await websocket.send_json({
                     "type": "call_status",
                     "status": "connected",
                     "call_type": call_type,
                     "text": announcement,
                     "audio_base64": b64_audio,
                     "sentiment": "joy",
-                }
-                await websocket.send_json(out)
+                })
 
             elif msg_type == "end_call":
                 farewell = "Goodbye Sir. Call ended."
                 await manager.set_state("speaking", sentiment="neutral", text=farewell)
                 audio_bytes = await voice.generate_tts_bytes(farewell, language="en")
                 b64_audio = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else None
-                out = {
+                await websocket.send_json({
                     "type": "call_status",
                     "status": "ended",
                     "text": farewell,
                     "audio_base64": b64_audio,
                     "sentiment": "neutral",
-                }
-                await websocket.send_json(out)
+                })
 
             elif msg_type == "interrupt":
                 if active_response_task and not active_response_task.done():
@@ -446,27 +549,25 @@ async def websocket_endpoint(websocket: WebSocket):
                 test_phrase = "Audio system online, Sir. Speaker volume is optimal."
                 audio_bytes = await voice.generate_tts_bytes(test_phrase, language="en")
                 b64_audio = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else None
-                out = {
+                await websocket.send_json({
                     "type": "audio_sentence",
                     "text": test_phrase,
                     "audio_base64": b64_audio,
                     "sentiment": "joy",
-                }
-                await websocket.send_json(out)
+                })
 
             elif msg_type == "intro_greeting":
                 greeting = get_random_greeting()
                 audio_bytes = await voice.generate_tts_bytes(greeting, language="en")
                 b64_audio = base64.b64encode(audio_bytes).decode("utf-8") if audio_bytes else None
                 await manager.set_state("speaking", sentiment="neutral", text=greeting)
-                out = {
+                await websocket.send_json({
                     "type": "audio_sentence",
                     "text": greeting,
                     "audio_base64": b64_audio,
                     "sentiment": "neutral",
                     "action": "intro",
-                }
-                await websocket.send_json(out)
+                })
 
             elif msg_type == "set_state":
                 await manager.set_state(payload.get("state", "idle"), sentiment=payload.get("sentiment"))

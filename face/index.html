@@ -11,23 +11,14 @@
   <link rel="icon" type="image/jpeg" href="/favicon.jpg">
   <style>
     :root {
-      --bg: #030712;
-      --panel: rgba(15, 23, 42, 0.92);
-      --border: rgba(56, 189, 248, 0.25);
-      --accent: #38bdf8;
-      --green: #10b981;
-      --red: #ef4444;
-      --text: #f1f5f9;
-      --muted: #94a3b8;
+      --bg: #030712; --panel: rgba(15, 23, 42, 0.92); --border: rgba(56, 189, 248, 0.25);
+      --accent: #38bdf8; --green: #10b981; --red: #ef4444; --text: #f1f5f9; --muted: #94a3b8;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body {
-      width: 100%;
-      height: 100dvh;
-      overflow: hidden;
+      width: 100%; height: 100dvh; overflow: hidden;
       background: radial-gradient(circle at 35% 40%, #0f172a 0%, #030712 100%);
-      color: var(--text);
-      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
+      color: var(--text); font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
     }
     .app-shell { display: grid; grid-template-columns: 1fr 390px; width: 100%; height: 100dvh; position: relative; }
     .stage { position: relative; height: 100%; overflow: hidden; }
@@ -35,33 +26,44 @@
     #canvas-container:active { cursor: grabbing; }
     canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 
-    /* HIDE SCROLLBARS WHILE KEEPING SMOOTH TOUCH/WHEEL SCROLL */
-    .chat-messages, .pane-body, #live-subtitle, .quick-chips {
-      scrollbar-width: none;
-      -ms-overflow-style: none;
-    }
-    .chat-messages::-webkit-scrollbar,
-    .pane-body::-webkit-scrollbar,
-    #live-subtitle::-webkit-scrollbar,
-    .quick-chips::-webkit-scrollbar {
-      display: none;
-    }
+    .chat-messages, .pane-body, #live-subtitle, .quick-chips { scrollbar-width: none; -ms-overflow-style: none; }
+    .chat-messages::-webkit-scrollbar, .pane-body::-webkit-scrollbar, #live-subtitle::-webkit-scrollbar, .quick-chips::-webkit-scrollbar { display: none; }
 
-    /* TOP BAR */
+    /* PIN SECURITY OVERLAY */
+    #auth-overlay {
+      display: none; position: fixed; inset: 0; z-index: 999;
+      background: rgba(2, 6, 23, 0.95); backdrop-filter: blur(18px);
+      align-items: center; justify-content: center; padding: 20px;
+    }
+    .auth-card {
+      width: 100%; max-width: 340px; background: rgba(15, 23, 42, 0.95);
+      border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 22px;
+      padding: 26px 22px; text-align: center; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7);
+      display: flex; flex-direction: column; gap: 14px;
+    }
+    .auth-card h2 { font-size: 18px; letter-spacing: 3px; color: var(--accent); }
+    .auth-card p { font-size: 12px; color: var(--muted); }
+    .auth-card input {
+      background: rgba(255,255,255,0.08); border: 1px solid rgba(56,189,248,0.3);
+      border-radius: 12px; padding: 11px; color: #fff; font-size: 18px; text-align: center; letter-spacing: 6px; outline: none;
+    }
+    .auth-card button {
+      background: #0284c7; color: #fff; border: none; border-radius: 12px;
+      padding: 11px; font-size: 14px; font-weight: 700; cursor: pointer;
+    }
+    #auth-error { color: #fca5a5; font-size: 12px; min-height: 16px; }
+
     #top-bar {
       position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
       display: flex; align-items: center; gap: 8px; background: var(--panel);
       backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-      border: 1px solid rgba(255,255,255,0.14);
-      padding: 7px 14px; border-radius: 999px; z-index: 100;
-      max-width: calc(100% - 24px); flex-wrap: wrap; justify-content: center;
-      box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+      border: 1px solid rgba(255,255,255,0.14); padding: 7px 14px; border-radius: 999px; z-index: 100;
+      max-width: calc(100% - 24px); flex-wrap: wrap; justify-content: center; box-shadow: 0 8px 28px rgba(0,0,0,0.55);
     }
     .hud-btn {
       background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.14);
       color: var(--text); padding: 6px 11px; border-radius: 999px; font-size: 12px;
-      font-weight: 600; cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; gap: 5px;
-      white-space: nowrap;
+      font-weight: 600; cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
     }
     .hud-btn:hover { border-color: var(--accent); color: var(--accent); }
     .hud-btn.active { background: #0284c7; border-color: var(--accent); color: #fff; box-shadow: 0 0 14px rgba(56,189,248,0.5); }
@@ -76,14 +78,11 @@
     }
     .vol-wrap { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; }
     #volume-slider { width: 62px; height: 4px; accent-color: var(--accent); cursor: pointer; }
-
     #status-pill {
-      display: inline-flex; align-items: center; gap: 6px;
-      background: rgba(2,6,23,0.65); border: 1px solid rgba(255,255,255,0.12);
-      padding: 5px 10px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: 0.8px;
+      display: inline-flex; align-items: center; gap: 6px; background: rgba(2,6,23,0.65);
+      border: 1px solid rgba(255,255,255,0.12); padding: 5px 10px; border-radius: 999px; font-size: 10px; font-weight: 700; letter-spacing: 0.8px;
     }
     #status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
-
     #call-banner {
       position: absolute; top: 68px; left: 50%; transform: translateX(-50%);
       background: rgba(16,185,129,0.2); border: 1px solid var(--green); color: #6ee7b7;
@@ -92,13 +91,11 @@
     #audio-prompt {
       position: absolute; top: 72px; left: 50%; transform: translateX(-50%);
       background: rgba(30,58,138,0.95); border: 1px solid var(--accent); color: #fff;
-      padding: 7px 16px; border-radius: 999px; font-size: 12px; font-weight: 600; cursor: pointer; display: none; z-index: 200;
-      white-space: nowrap;
+      padding: 7px 16px; border-radius: 999px; font-size: 12px; font-weight: 600; cursor: pointer; display: none; z-index: 200; white-space: nowrap;
     }
     #webcam-box {
       position: absolute; bottom: 96px; right: 16px; width: 190px; height: 142px;
-      background: #000; border: 2px solid var(--accent); border-radius: 14px; overflow: hidden;
-      display: none; flex-direction: column; z-index: 95;
+      background: #000; border: 2px solid var(--accent); border-radius: 14px; overflow: hidden; display: none; flex-direction: column; z-index: 95;
     }
     #webcam-header { background: rgba(15,23,42,0.85); padding: 4px 10px; font-size: 10px; color: var(--accent); font-weight: 700; display: flex; justify-content: space-between; }
     #user-webcam { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
@@ -111,27 +108,24 @@
       font-size: 14px; line-height: 1.45; text-align: center; z-index: 90; unicode-bidi: plaintext;
     }
 
-    /* MOBILE QUICK DOCK */
     #mobile-bottom-dock {
       display: none; position: absolute; left: 10px; right: 10px; bottom: 10px; z-index: 120;
       background: rgba(15, 23, 42, 0.92); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
       border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 20px; padding: 8px;
       align-items: center; gap: 6px; box-shadow: 0 8px 25px rgba(0, 0, 0, 0.65);
     }
-    #mobile-bottom-dock input {
+    #mobile-bottom-dock input[type="text"] {
       flex: 1; min-width: 0; background: rgba(255, 255, 255, 0.08);
-      border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 14px;
-      padding: 9px 12px; color: #fff; font-size: 13px; outline: none;
+      border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 14px; padding: 9px 12px; color: #fff; font-size: 13px; outline: none;
     }
     .mob-btn {
       background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.16);
-      color: #e2e8f0; height: 38px; padding: 0 11px; border-radius: 14px; font-size: 13px;
+      color: #e2e8f0; height: 38px; padding: 0 10px; border-radius: 14px; font-size: 13px;
       font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
     }
     .mob-btn.primary { background: #0284c7; border-color: var(--accent); color: #fff; }
     .mob-btn.mic-active { background: var(--red); border-color: var(--red); color: #fff; }
 
-    /* SIDEBAR DASHBOARD */
     .sidebar {
       background: var(--panel); border-left: 1px solid var(--border);
       display: flex; flex-direction: column; height: 100%; z-index: 150;
@@ -156,15 +150,22 @@
     .msg.jarvis { align-self: flex-start; background: rgba(30,41,59,0.95); border: 1px solid rgba(56,189,248,0.2); border-bottom-left-radius: 4px; }
     .msg.system { align-self: center; font-size: 11px; color: var(--muted); background: rgba(255,255,255,0.05); }
     .msg a { color: #7dd3fc; text-decoration: underline; }
+    .msg img.chat-thumb { display: block; max-width: 180px; border-radius: 8px; margin-bottom: 6px; }
 
-    .quick-chips { display: flex; gap: 6px; padding: 6px 12px; overflow-x: auto; border-top: 1px solid rgba(255,255,255,0.06); }
+    .quick-chips { display: flex; gap: 6px; padding: 6px 12px; overflow-x: auto; border-top: 1px solid rgba(255,255,255,0.06); align-items: center; }
     .chip { flex: 0 0 auto; background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.25); color: #bae6fd; border-radius: 999px; padding: 4px 10px; font-size: 11px; cursor: pointer; }
+    .chip.danger { background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.35); color: #fca5a5; }
+
+    #image-preview-bar {
+      display: none; align-items: center; justify-content: space-between; padding: 6px 12px;
+      background: rgba(56,189,248,0.12); border-top: 1px solid rgba(56,189,248,0.25); font-size: 11px; color: #bae6fd;
+    }
 
     .chat-composer { display: flex; gap: 6px; padding: 10px 12px; border-top: 1px solid rgba(255,255,255,0.1); background: rgba(2,6,23,0.75); align-items: center; }
-    .chat-composer input { flex: 1; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16); border-radius: 12px; padding: 9px 12px; color: #fff; font-size: 13px; outline: none; }
-    .chat-composer input:focus { border-color: var(--accent); }
+    .chat-composer input[type="text"] { flex: 1; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16); border-radius: 12px; padding: 9px 12px; color: #fff; font-size: 13px; outline: none; }
+    .chat-composer input[type="text"]:focus { border-color: var(--accent); }
     .send-btn { background: #0284c7; color: #fff; border: none; border-radius: 12px; padding: 9px 13px; font-size: 13px; font-weight: 700; cursor: pointer; }
-    .mic-round { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16); color: #e2e8f0; width: 38px; height: 38px; border-radius: 12px; cursor: pointer; font-size: 16px; }
+    .mic-round { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16); color: #e2e8f0; width: 36px; height: 36px; border-radius: 12px; cursor: pointer; font-size: 15px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
     .mic-round.active { background: var(--red); border-color: var(--red); color: #fff; }
 
     .pane-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
@@ -176,25 +177,16 @@
 
     @media (max-width: 900px) {
       .app-shell { grid-template-columns: 1fr; }
-      #top-bar {
-        top: 8px; left: 8px; right: 8px; transform: none; max-width: none; width: auto;
-        border-radius: 14px; padding: 5px 8px; gap: 5px;
-      }
+      #top-bar { top: 8px; left: 8px; right: 8px; transform: none; max-width: none; width: auto; border-radius: 14px; padding: 5px 8px; gap: 5px; }
       .hud-btn { font-size: 10.5px; padding: 4px 8px; }
       #status-pill { font-size: 9.5px; padding: 4px 8px; }
       #volume-slider { width: 50px; }
       #call-banner, #audio-prompt { top: 88px; }
-      #live-subtitle {
-        bottom: 66px; width: calc(100% - 20px); max-width: none;
-        max-height: 62px; padding: 7px 12px; font-size: 12px; border-radius: 12px;
-      }
+      #live-subtitle { bottom: 66px; width: calc(100% - 20px); max-width: none; max-height: 62px; padding: 7px 12px; font-size: 12px; border-radius: 12px; }
       #webcam-box { width: 120px; height: 90px; bottom: 136px; right: 10px; }
       #mobile-bottom-dock { display: flex; }
       #mobile-close-bar { display: flex; }
-      .sidebar {
-        position: fixed; inset: 0 0 0 auto; width: 100vw; max-width: 420px;
-        transform: translateX(100%); transition: transform 0.25s ease;
-      }
+      .sidebar { position: fixed; inset: 0 0 0 auto; width: 100vw; max-width: 420px; transform: translateX(100%); transition: transform 0.25s ease; }
       .sidebar.open { transform: translateX(0); }
     }
   </style>
@@ -211,6 +203,17 @@
   </script>
 </head>
 <body>
+<!-- PIN LOCK SCREEN -->
+<div id="auth-overlay">
+  <div class="auth-card">
+    <h2>🔒 J.A.R.V.I.S</h2>
+    <p>Enter your security PIN to unlock assistant access.</p>
+    <input type="password" id="pin-input" inputmode="numeric" placeholder="••••" autocomplete="current-password">
+    <div id="auth-error"></div>
+    <button id="pin-submit-btn">Unlock Access</button>
+  </div>
+</div>
+
 <div class="app-shell">
   <div class="stage">
     <div id="canvas-container"></div>
@@ -234,7 +237,7 @@
     <div id="call-banner"><span id="call-type-label">CALL</span><span id="call-timer">00:00</span></div>
 
     <div id="webcam-box">
-      <div id="webcam-header"><span>USER CAM</span><span style="color:#ef4444;">● LIVE</span></div>
+      <div id="webcam-header"><span>USER CAM (VISION ON)</span><span style="color:#ef4444;">● LIVE</span></div>
       <video id="user-webcam" autoplay muted playsinline></video>
     </div>
 
@@ -242,6 +245,7 @@
 
     <div id="mobile-bottom-dock">
       <button id="mob-mic-btn" class="mob-btn" title="Voice Note">🎙️</button>
+      <label class="mob-btn" title="Snap or Attach Image" style="cursor:pointer;">📷<input type="file" id="mob-img-input" accept="image/*" style="display:none;"></label>
       <input type="text" id="mob-input" placeholder="Ask JARVIS..." autocomplete="off">
       <button id="mob-send-btn" class="mob-btn primary">➤</button>
       <button id="mobile-drawer-btn" class="mob-btn" title="Chat, Tasks & Contacts">☰</button>
@@ -262,16 +266,23 @@
 
     <div class="tab-pane active" id="tab-chat">
       <div class="chat-messages" id="chat-messages">
-        <div class="msg system">J.A.R.V.I.S Enterprise Connected • Free Groq + Edge-TTS</div>
+        <div class="msg system">J.A.R.V.I.S Enterprise • Vision + Weather + Cloud Memory</div>
       </div>
       <div class="quick-chips">
-        <button class="chip" data-prompt="What is my daily plan?">📋 Daily Plan</button>
+        <button class="chip" data-prompt="Give me my morning briefing">☀️ Briefing</button>
+        <button class="chip" data-prompt="What is the weather right now?">🌤️ Weather</button>
         <button class="chip" data-prompt="Open YouTube">▶ YouTube</button>
-        <button class="chip" data-prompt="Connect audio call">📞 Audio Call</button>
-        <button class="chip" data-prompt="Connect video call">📹 Video Call</button>
+        <button class="chip" data-prompt="Connect audio call">📞 Audio</button>
+        <button class="chip" data-prompt="Connect video call">📹 Video</button>
+        <button class="chip danger" id="clear-chat-btn">🗑️ Clear</button>
+      </div>
+      <div id="image-preview-bar">
+        <span id="image-preview-label">📷 Image attached — ask a question</span>
+        <button class="small-btn" id="clear-image-btn">✕</button>
       </div>
       <div class="chat-composer">
-        <button id="mic-btn" class="mic-round" title="Voice Note / Speak">🎙️</button>
+        <button id="mic-btn" class="mic-round" title="Voice Note">🎙️</button>
+        <label class="mic-round" title="Attach or Take Photo" style="cursor:pointer;">📷<input type="file" id="img-input" accept="image/*" style="display:none;"></label>
         <input type="text" id="user-input" placeholder="Message JARVIS..." autocomplete="off">
         <button id="send-btn" class="send-btn">Send ➤</button>
       </div>
@@ -331,8 +342,14 @@
   let mediaRecorder = null, voiceNoteChunks = [], isRecordingVoiceNote = false;
   let audioCtx = null, analyser = null, audioGainNode = null, audioSourceNode = null, isAudioInit = false;
   let mouthLevel = 0, mouthTarget = 0;
-  let requestSeq = 0, latestReqId = '', activeCallType = null, callTimer = null, callStart = 0, webcamStream = null;
+  let requestSeq = 0, latestReqId = '';
   let activeJarvisBubble = null, activeSubtitleText = '';
+  let pendingImageBase64 = null, historyLoaded = false;
+  let authToken = localStorage.getItem('jarvis_token') || '', isAuthed = false;
+
+  let activeCallType = null, callTimer = null, callStart = 0, callStream = null;
+  let vadAudioCtx = null, vadAnalyser = null, vadTimer = null;
+  let vadRecorder = null, vadChunks = [], vadSpeaking = false, vadLastSpeech = 0, vadStartTime = 0, vadSending = false;
 
   let avatarLoaded = false, introSent = false;
   let entranceActive = false, entranceElapsed = 0, walkPhase = 0;
@@ -355,12 +372,23 @@
   const langMode = document.getElementById('lang-mode');
   const audioPrompt = document.getElementById('audio-prompt');
   const sidebar = document.getElementById('sidebar');
+  const authOverlay = document.getElementById('auth-overlay');
 
   const STATE_COLORS = { idle: '#10b981', listening: '#38bdf8', thinking: '#f59e0b', speaking: '#a855f7', entering: '#38bdf8' };
 
-  function scrollDown(el) {
-    requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
+  function apiFetch(url, options = {}) {
+    const headers = new Headers(options.headers || {});
+    if (authToken) headers.set('Authorization', `Bearer ${authToken}`);
+    return fetch(url, { ...options, headers, credentials: 'same-origin' }).then(res => {
+      if (res.status === 401) {
+        isAuthed = false;
+        authOverlay.style.display = 'flex';
+      }
+      return res;
+    });
   }
+
+  function scrollDown(el) { requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; }); }
 
   function setState(state, sentiment = null) {
     currentState = state;
@@ -379,19 +407,25 @@
     }
   }
 
-  function addChatBubble(role, text, actionUrl = null) {
-    if (!text) return null;
+  function addChatBubble(role, text, actionUrl = null, thumbUrl = null) {
+    if (!text && !thumbUrl) return null;
     const div = document.createElement('div');
     div.className = `msg ${role}`;
-    div.textContent = text;
+    if (thumbUrl) {
+      const img = document.createElement('img');
+      img.src = thumbUrl; img.className = 'chat-thumb';
+      div.appendChild(img);
+    }
+    if (text) {
+      const span = document.createElement('span');
+      span.textContent = text;
+      div.appendChild(span);
+    }
     if (actionUrl) {
       const br = document.createElement('br');
       const a = document.createElement('a');
-      a.href = actionUrl;
-      a.target = '_blank';
-      a.textContent = 'Open Action Link ↗';
-      div.appendChild(br);
-      div.appendChild(a);
+      a.href = actionUrl; a.target = '_blank'; a.textContent = 'Open Action Link ↗';
+      div.appendChild(br); div.appendChild(a);
     }
     chatMessages.appendChild(div);
     scrollDown(chatMessages);
@@ -409,14 +443,49 @@
       if (actionUrl) {
         const br = document.createElement('br');
         const a = document.createElement('a');
-        a.href = actionUrl;
-        a.target = '_blank';
-        a.textContent = 'Open Action Link ↗';
-        activeJarvisBubble.appendChild(br);
-        activeJarvisBubble.appendChild(a);
+        a.href = actionUrl; a.target = '_blank'; a.textContent = 'Open Action Link ↗';
+        activeJarvisBubble.appendChild(br); activeJarvisBubble.appendChild(a);
       }
       scrollDown(chatMessages);
     }
+  }
+
+  function captureWebcamFrame() {
+    const vid = document.getElementById('user-webcam');
+    if (activeCallType !== 'video' || !vid || vid.readyState < 2) return null;
+    const c = document.createElement('canvas');
+    const maxW = 640;
+    const scale = Math.min(1, maxW / (vid.videoWidth || 640));
+    c.width = Math.round((vid.videoWidth || 640) * scale);
+    c.height = Math.round((vid.videoHeight || 480) * scale);
+    c.getContext('2d').drawImage(vid, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.72);
+  }
+
+  function handleSelectedImageFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement('canvas');
+        const maxW = 720;
+        const scale = Math.min(1, maxW / img.width);
+        c.width = Math.round(img.width * scale);
+        c.height = Math.round(img.height * scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        pendingImageBase64 = c.toDataURL('image/jpeg', 0.78);
+        document.getElementById('image-preview-bar').style.display = 'flex';
+        liveSubtitle.innerText = '📷 Photo ready — ask Jarvis about it!';
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function clearPendingImage() {
+    pendingImageBase64 = null;
+    document.getElementById('image-preview-bar').style.display = 'none';
   }
 
   function getBone(name) { return currentVrm?.humanoid?.getNormalizedBoneNode(name) || null; }
@@ -438,15 +507,11 @@
 
     let lArmX = 0.04 + breathe * 0.3, rArmX = 0.04 + breathe * 0.3;
     let lLowY = -0.14, rLowY = 0.14;
-
     if (isPlayingAudio) {
       const g = Math.sin(time * 3.0);
-      lArmX += g * 0.06;
-      rArmX -= g * 0.06;
-      lLowY = -0.22 - Math.max(0, g) * 0.2;
-      rLowY = 0.22 + Math.max(0, -g) * 0.2;
+      lArmX += g * 0.06; rArmX -= g * 0.06;
+      lLowY = -0.22 - Math.max(0, g) * 0.2; rLowY = 0.22 + Math.max(0, -g) * 0.2;
     }
-
     if (lUp) lUp.rotation.set(lArmX, 0.04, 1.28 + breathe * 0.2);
     if (rUp) rUp.rotation.set(rArmX, -0.04, -1.28 - breathe * 0.2);
     if (lLow) lLow.rotation.set(0, lLowY, 0.05);
@@ -472,11 +537,9 @@
     camera.updateProjectionMatrix();
     renderer.setSize(container.clientWidth, container.clientHeight);
     if (isPortrait) {
-      camera.position.set(0.0, 1.30, 2.45);
-      controls.target.set(0.0, 1.15, 0.0);
+      camera.position.set(0.0, 1.30, 2.45); controls.target.set(0.0, 1.15, 0.0);
     } else {
-      camera.position.set(0.0, 1.38, 2.05);
-      controls.target.set(0.0, 1.26, 0.0);
+      camera.position.set(0.0, 1.38, 2.05); controls.target.set(0.0, 1.26, 0.0);
     }
     controls.update();
   }
@@ -494,22 +557,15 @@
     container.appendChild(renderer.domElement);
 
     controls = new OrbitControls(camera, renderer.domElement);
-    controls.minDistance = 0.6;
-    controls.maxDistance = 4.6;
-    controls.enableDamping = true;
+    controls.minDistance = 0.6; controls.maxDistance = 4.6; controls.enableDamping = true;
     updateCameraFraming();
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.95));
-    const dir = new THREE.DirectionalLight(0xfff5ea, 1.3);
-    dir.position.set(1, 2, 1.2);
-    scene.add(dir);
-    const fill = new THREE.DirectionalLight(0xdbeafe, 0.65);
-    fill.position.set(-1, 1, 1);
-    scene.add(fill);
+    const dir = new THREE.DirectionalLight(0xfff5ea, 1.3); dir.position.set(1, 2, 1.2); scene.add(dir);
+    const fill = new THREE.DirectionalLight(0xdbeafe, 0.65); fill.position.set(-1, 1, 1); scene.add(fill);
 
     avatarPivot = new THREE.Group();
     scene.add(avatarPivot);
-
     window.addEventListener('resize', updateCameraFraming);
 
     const loader = new GLTFLoader();
@@ -554,7 +610,6 @@
           const stride = Math.sin(walkPhase);
           avatarPivot.position.y = Math.abs(stride) * 0.035;
           avatarPivot.rotation.y = Math.PI * 0.46;
-
           const lLeg = getBone('leftUpperLeg'), rLeg = getBone('rightUpperLeg');
           const lShin = getBone('leftLowerLeg'), rShin = getBone('rightLowerLeg');
           const lArm = getBone('leftUpperArm'), rArm = getBone('rightUpperArm');
@@ -579,7 +634,7 @@
           avatarPivot.position.set(0, 0, 0);
           avatarPivot.rotation.y = 0;
           setState('idle');
-          if (ws?.readyState === WebSocket.OPEN && !introSent) {
+          if (isAuthed && ws?.readyState === WebSocket.OPEN && !introSent) {
             introSent = true;
             ws.send(JSON.stringify({ type: 'intro_greeting' }));
           }
@@ -593,15 +648,11 @@
             if (bp <= 1) { try { em.setValue('blink', Math.sin(bp * Math.PI)); } catch {} }
             else { try { em.setValue('blink', 0); } catch {} lastBlink = time; nextBlink = 2.4 + Math.random() * 3.2; }
           }
-
           if (isPlayingAudio && analyser) {
             const samples = new Uint8Array(analyser.fftSize);
             analyser.getByteTimeDomainData(samples);
             let sum = 0;
-            for (let i = 0; i < samples.length; i++) {
-              const n = (samples[i] - 128) / 128;
-              sum += n * n;
-            }
+            for (let i = 0; i < samples.length; i++) { const n = (samples[i] - 128) / 128; sum += n * n; }
             const rms = Math.sqrt(sum / samples.length);
             mouthTarget = rms > 0.015 ? Math.min(0.25, rms * 1.85) : 0;
           } else {
@@ -609,10 +660,7 @@
           }
           const speed = mouthTarget > mouthLevel ? 0.55 : 0.35;
           mouthLevel += (mouthTarget - mouthLevel) * speed;
-          try {
-            em.setValue('aa', mouthLevel);
-            em.setValue('oh', mouthLevel * 0.16);
-          } catch {}
+          try { em.setValue('aa', mouthLevel); em.setValue('oh', mouthLevel * 0.16); } catch {}
         }
       }
       currentVrm.update(delta);
@@ -625,8 +673,7 @@
     if (audioCtx.state === 'suspended') await audioCtx.resume();
     if (!isAudioInit) {
       analyser = audioCtx.createAnalyser();
-      analyser.fftSize = 512;
-      analyser.smoothingTimeConstant = 0.12;
+      analyser.fftSize = 512; analyser.smoothingTimeConstant = 0.12;
       audioGainNode = audioCtx.createGain();
       audioGainNode.gain.value = masterVolume;
       analyser.connect(audioGainNode);
@@ -653,61 +700,47 @@
   async function processAudioQueue() {
     if (!audioQueue.length) {
       isPlayingAudio = false;
-      if (activeCallType || wakeEnabled) {
-        setState(wakeEnabled ? 'idle' : 'listening');
-        setTimeout(startRecognition, 200);
-      } else {
-        setState('idle');
-      }
+      if (activeCallType) setState('listening');
+      else if (wakeEnabled) { setState('idle'); setTimeout(startRecognition, 250); }
+      else setState('idle');
       return;
     }
-
     if (!(await ensureAudioUnlocked())) {
       audioPrompt.style.display = 'block';
       isPlayingAudio = false;
       return;
     }
-
     stopRecognition();
     isPlayingAudio = true;
     setState('speaking');
     const item = audioQueue.shift();
     if (item.text) {
-      activeSubtitleText = item.isFirst
-        ? item.text
-        : (activeSubtitleText ? activeSubtitleText + ' ' + item.text : item.text);
+      activeSubtitleText = item.isFirst ? item.text : (activeSubtitleText ? activeSubtitleText + ' ' + item.text : item.text);
       liveSubtitle.innerText = activeSubtitleText;
       scrollDown(liveSubtitle);
     }
-
     audioCtx.decodeAudioData(item.bytes.buffer.slice(0), (buffer) => {
       audioSourceNode = audioCtx.createBufferSource();
       audioSourceNode.buffer = buffer;
       audioSourceNode.connect(analyser);
-      audioSourceNode.onended = () => {
-        isPlayingAudio = false;
-        audioSourceNode = null;
-        processAudioQueue();
-      };
+      audioSourceNode.onended = () => { isPlayingAudio = false; audioSourceNode = null; processAudioQueue(); };
       audioSourceNode.start(0);
-    }, () => {
-      isPlayingAudio = false;
-      processAudioQueue();
-    });
+    }, () => { isPlayingAudio = false; processAudioQueue(); });
   }
 
   function interruptSpeech() {
     if (audioSourceNode) { try { audioSourceNode.stop(0); } catch {} audioSourceNode = null; }
-    audioQueue = [];
-    isPlayingAudio = false;
+    audioQueue = []; isPlayingAudio = false;
     setState('listening');
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'interrupt' }));
-    setTimeout(startRecognition, 150);
+    if (wakeEnabled && !activeCallType) setTimeout(startRecognition, 180);
   }
 
   function initWebSocket() {
+    if (!isAuthed || (ws && ws.readyState <= 1)) return;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${proto}//${location.host}/ws`);
+    const tokQ = authToken ? `?token=${encodeURIComponent(authToken)}` : '';
+    ws = new WebSocket(`${proto}//${location.host}/ws${tokQ}`);
     ws.onopen = () => {
       if (avatarLoaded && !entranceActive && !introSent) {
         introSent = true;
@@ -717,7 +750,6 @@
     };
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
-
       if (msg.type === 'reminder') {
         activeJarvisBubble = null;
         activeSubtitleText = msg.text;
@@ -729,7 +761,6 @@
         return;
       }
       if (msg.request_id && msg.request_id !== latestReqId) return;
-
       const isFirst = Boolean(msg.is_first_sentence || msg.action === 'intro' || msg.type === 'call_status');
 
       if (msg.text && (msg.type === 'audio_sentence' || msg.type === 'response' || msg.type === 'call_status')) {
@@ -741,10 +772,7 @@
         }
         refreshDashboard();
       }
-
-      if (msg.open_url) {
-        try { window.open(msg.open_url, '_blank'); } catch {}
-      }
+      if (msg.open_url) { try { window.open(msg.open_url, '_blank'); } catch {} }
       if (msg.action === 'start_video_call' && activeCallType !== 'video') startCall('video');
       else if (msg.action === 'start_audio_call' && activeCallType !== 'audio') startCall('audio');
       else if (msg.action === 'end_call' && activeCallType) endCall();
@@ -752,16 +780,23 @@
       if (msg.type === 'state') setState(msg.state, msg.sentiment);
       else if (msg.audio_base64) playAudioBase64(msg.audio_base64, msg.text || '', isFirst);
     };
-    ws.onclose = () => setTimeout(initWebSocket, 2000);
+    ws.onclose = (e) => {
+      ws = null;
+      if (e.code === 4401) { isAuthed = false; authOverlay.style.display = 'flex'; return; }
+      setTimeout(initWebSocket, 2500);
+    };
   }
 
   function sendUserMessage(text) {
-    if (!text?.trim()) return;
+    if (!text?.trim() && !pendingImageBase64) return;
     ensureAudioUnlocked();
-    const clean = text.trim();
-    activeJarvisBubble = null;
-    activeSubtitleText = '';
-    addChatBubble('user', clean);
+    const clean = (text || 'What do you see here?').trim();
+    const imgToSend = pendingImageBase64 || captureWebcamFrame();
+    const userThumb = pendingImageBase64;
+    clearPendingImage();
+
+    activeJarvisBubble = null; activeSubtitleText = '';
+    addChatBubble('user', clean, null, userThumb);
     setState('thinking');
     liveSubtitle.innerText = `Thinking: "${clean}"`;
     if (isPlayingAudio || audioQueue.length) interruptSpeech();
@@ -769,16 +804,26 @@
 
     const selectedLang = langMode.value === 'auto' ? null : langMode.value;
     if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'user_message', text: clean, language: selectedLang, request_id: latestReqId }));
+      ws.send(JSON.stringify({
+        type: 'user_message', text: clean, language: selectedLang, image_base64: imgToSend, request_id: latestReqId
+      }));
     }
   }
 
-  function startCall(type) {
+  async function startCall(type) {
     if (activeCallType === type) { endCall(); return; }
-    activeCallType = type;
-    callStart = Date.now();
+    if (activeCallType) endCall();
+    stopRecognition();
+    try {
+      callStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: type === 'video' ? { facingMode: 'user', width: { ideal: 640 } } : false,
+      });
+    } catch { addChatBubble('system', 'Microphone / Camera permission required.'); return; }
+
+    activeCallType = type; callStart = Date.now();
     document.getElementById('call-banner').style.display = 'flex';
-    document.getElementById('call-type-label').innerText = type === 'video' ? 'VIDEO CALL' : 'AUDIO CALL';
+    document.getElementById('call-type-label').innerText = type === 'video' ? 'VIDEO CALL (VISION)' : 'AUDIO CALL (AUTO-VAD)';
     clearInterval(callTimer);
     callTimer = setInterval(() => {
       const s = Math.floor((Date.now() - callStart) / 1000);
@@ -787,27 +832,77 @@
     btnVideoCall.classList.toggle('active', type === 'video');
     btnAudioCall.classList.toggle('active', type === 'audio');
     if (type === 'video') {
-      navigator.mediaDevices.getUserMedia({ video: true, audio: false }).then(s => {
-        webcamStream = s;
-        document.getElementById('user-webcam').srcObject = s;
-        document.getElementById('webcam-box').style.display = 'flex';
-      }).catch(() => {});
+      document.getElementById('user-webcam').srcObject = callStream;
+      document.getElementById('webcam-box').style.display = 'flex';
     }
+    startCallVAD(callStream);
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'start_call', call_type: type }));
+  }
+
+  function startCallVAD(stream) {
+    vadAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = vadAudioCtx.createMediaStreamSource(stream);
+    vadAnalyser = vadAudioCtx.createAnalyser(); vadAnalyser.fftSize = 512;
+    src.connect(vadAnalyser);
+    const buf = new Uint8Array(vadAnalyser.fftSize);
+    const audioOnlyStream = new MediaStream(stream.getAudioTracks());
+
+    vadTimer = setInterval(() => {
+      if (!activeCallType || isPlayingAudio || vadSending || currentState === 'thinking') {
+        if (vadSpeaking && vadRecorder && vadRecorder.state === 'recording') {
+          vadSpeaking = false; try { vadRecorder.stop(); } catch {}
+        }
+        return;
+      }
+      vadAnalyser.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+      const rms = Math.sqrt(sum / buf.length);
+      const now = Date.now();
+
+      if (rms > 0.028) {
+        vadLastSpeech = now;
+        if (!vadSpeaking) {
+          vadSpeaking = true; vadStartTime = now; vadChunks = [];
+          setMicVisual(true); setState('listening');
+          vadRecorder = new MediaRecorder(audioOnlyStream);
+          vadRecorder.ondataavailable = (e) => { if (e.data.size) vadChunks.push(e.data); };
+          vadRecorder.onstop = async () => {
+            setMicVisual(false);
+            const blob = new Blob(vadChunks, { type: vadRecorder.mimeType || 'audio/webm' });
+            if (blob.size < 1800) return;
+            vadSending = true;
+            try {
+              const form = new FormData(); form.append('file', blob, 'call.webm');
+              const langQ = (langMode.value === 'en' || langMode.value === 'ur') ? `?language=${langMode.value}` : '';
+              const r = await apiFetch(`/api/voice/note${langQ}`, { method: 'POST', body: form });
+              const d = await r.json();
+              if (r.ok && d.text && d.text.trim().length > 1) sendUserMessage(d.text.trim());
+            } catch {} finally { vadSending = false; }
+          };
+          vadRecorder.start();
+        }
+      } else if (vadSpeaking && (now - vadLastSpeech > 1100 || now - vadStartTime > 10000)) {
+        vadSpeaking = false;
+        if (vadRecorder && vadRecorder.state === 'recording') { try { vadRecorder.stop(); } catch {} }
+      }
+    }, 70);
   }
 
   function endCall() {
     if (!activeCallType) return;
-    activeCallType = null;
-    btnAudioCall.classList.remove('active');
-    btnVideoCall.classList.remove('active');
-    document.getElementById('call-banner').style.display = 'none';
-    clearInterval(callTimer);
-    if (webcamStream) { webcamStream.getTracks().forEach(t => t.stop()); webcamStream = null; }
+    activeCallType = null; clearInterval(vadTimer); vadTimer = null; vadSpeaking = false;
+    if (vadRecorder && vadRecorder.state === 'recording') { try { vadRecorder.stop(); } catch {} }
+    if (vadAudioCtx) { try { vadAudioCtx.close(); } catch {} vadAudioCtx = null; }
+    if (callStream) { callStream.getTracks().forEach(t => t.stop()); callStream = null; }
+    btnAudioCall.classList.remove('active'); btnVideoCall.classList.remove('active');
+    document.getElementById('call-banner').style.display = 'none'; clearInterval(callTimer);
+    document.getElementById('user-webcam').srcObject = null;
     document.getElementById('webcam-box').style.display = 'none';
-    stopRecognition();
+    setMicVisual(false);
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'end_call' }));
     setState('idle');
+    if (wakeEnabled) setTimeout(startRecognition, 400);
   }
 
   function setMicVisual(active) {
@@ -819,8 +914,7 @@
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) return;
     recognition = new SR();
-    recognition.continuous = false;
-    recognition.interimResults = false;
+    recognition.continuous = false; recognition.interimResults = false;
     recognition.lang = langMode.value === 'ur' ? 'ur-PK' : 'en-US';
     recognition.onstart = () => { isRecognizing = true; setMicVisual(true); };
     recognition.onresult = (e) => {
@@ -838,13 +932,12 @@
     };
     recognition.onerror = () => { isRecognizing = false; setMicVisual(false); };
     recognition.onend = () => {
-      isRecognizing = false;
-      setMicVisual(false);
-      if ((activeCallType || wakeEnabled) && !isPlayingAudio) setTimeout(startRecognition, 400);
+      isRecognizing = false; setMicVisual(false);
+      if (wakeEnabled && !activeCallType && !isPlayingAudio) setTimeout(startRecognition, 400);
     };
   }
   function startRecognition() {
-    if (isPlayingAudio) return;
+    if (isPlayingAudio || activeCallType) return;
     if (!recognition) initRecognition();
     if (!recognition || isRecognizing) return;
     recognition.lang = langMode.value === 'ur' ? 'ur-PK' : 'en-US';
@@ -864,46 +957,44 @@
       mediaRecorder.ondataavailable = (e) => { if (e.data.size) voiceNoteChunks.push(e.data); };
       mediaRecorder.onstop = async () => {
         stream.getTracks().forEach(t => t.stop());
-        isRecordingVoiceNote = false;
-        setMicVisual(false);
+        isRecordingVoiceNote = false; setMicVisual(false);
         const blob = new Blob(voiceNoteChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
-        const form = new FormData();
-        form.append('file', blob, 'voice.webm');
+        const form = new FormData(); form.append('file', blob, 'voice.webm');
         const langQ = (langMode.value === 'en' || langMode.value === 'ur') ? `?language=${langMode.value}` : '';
-        const r = await fetch(`/api/voice/note${langQ}`, { method: 'POST', body: form });
+        const r = await apiFetch(`/api/voice/note${langQ}`, { method: 'POST', body: form });
         const d = await r.json();
         if (r.ok && d.text) sendUserMessage(d.text);
       };
-      mediaRecorder.start();
-      isRecordingVoiceNote = true;
-      setMicVisual(true);
+      mediaRecorder.start(); isRecordingVoiceNote = true; setMicVisual(true);
     } catch { addChatBubble('system', 'Microphone permission denied.'); }
   }
 
   async function refreshDashboard() {
+    if (!isAuthed) return;
     try {
-      const res = await fetch('/api/dashboard');
+      const res = await apiFetch('/api/dashboard');
+      if (!res.ok) return;
       const data = await res.json();
+
+      if (!historyLoaded && Array.isArray(data.chat_history)) {
+        historyLoaded = true;
+        data.chat_history.forEach(m => addChatBubble(m.role === 'user' ? 'user' : 'jarvis', m.content, m.action_url || null));
+      }
 
       const tList = document.getElementById('tasks-list');
       tList.innerHTML = data.todos.length ? '' : '<div class="card">No pending tasks yet.</div>';
       data.todos.forEach(t => {
-        const c = document.createElement('div');
-        c.className = 'card';
+        const c = document.createElement('div'); c.className = 'card';
         c.innerHTML = `<div class="card-row"><strong>${t.task}</strong><button class="small-btn" data-done="${t.id}">✓ Done</button></div>
           <span style="color:#94a3b8;">${t.due_time ? '⏰ ' + t.due_time + ' (' + t.recurrence + ')' : 'No time set'}</span>`;
-        c.querySelector('[data-done]').onclick = async () => {
-          await fetch(`/api/todos/${t.id}/complete`, { method: 'POST' });
-          refreshDashboard();
-        };
+        c.querySelector('[data-done]').onclick = async () => { await apiFetch(`/api/todos/${t.id}/complete`, { method: 'POST' }); refreshDashboard(); };
         tList.appendChild(c);
       });
 
       const cList = document.getElementById('contacts-list');
-      cList.innerHTML = data.contacts.length ? '' : '<div class="card">No contacts yet. Import .vcf from your phone or add manually above.</div>';
+      cList.innerHTML = data.contacts.length ? '' : '<div class="card">No contacts yet. Import .vcf or add manually above.</div>';
       data.contacts.forEach(ct => {
-        const c = document.createElement('div');
-        c.className = 'card';
+        const c = document.createElement('div'); c.className = 'card';
         const digits = (ct.phone || '').replace(/[^\d+]/g, '');
         c.innerHTML = `<div class="card-row"><strong>${ct.display_name}</strong><span>${ct.phone || ct.email || ''}</span></div>
           <div class="card-row" style="justify-content:flex-start;">
@@ -917,22 +1008,62 @@
       const mList = document.getElementById('memory-list');
       mList.innerHTML = '';
       data.skills.forEach(s => {
-        const c = document.createElement('div');
-        c.className = 'card';
+        const c = document.createElement('div'); c.className = 'card';
         c.innerHTML = `<strong>⚡ Skill: ${s.name}</strong><span>Trigger: "${s.trigger_phrase}"</span><span style="color:#94a3b8;">${s.instructions}</span>`;
         mList.appendChild(c);
       });
       data.memories.forEach(m => {
-        const c = document.createElement('div');
-        c.className = 'card';
+        const c = document.createElement('div'); c.className = 'card';
         c.innerHTML = `<strong>📌 ${m.key}</strong><span>${m.value}</span>`;
         mList.appendChild(c);
       });
-      if (!data.skills.length && !data.memories.length) {
-        mList.innerHTML = '<div class="card">Tell Jarvis to remember facts or learn new skills!</div>';
-      }
+      if (!data.skills.length && !data.memories.length) mList.innerHTML = '<div class="card">Tell Jarvis to remember facts or learn new skills!</div>';
     } catch {}
   }
+
+  async function submitPin() {
+    const pin = document.getElementById('pin-input').value.trim();
+    const errEl = document.getElementById('auth-error');
+    if (!pin) return;
+    try {
+      const r = await fetch('/api/auth/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin', body: JSON.stringify({ pin })
+      });
+      if (!r.ok) { errEl.textContent = 'Incorrect PIN. Try again.'; return; }
+      const d = await r.json();
+      authToken = d.token || '';
+      if (authToken) localStorage.setItem('jarvis_token', authToken);
+      isAuthed = true;
+      errEl.textContent = '';
+      authOverlay.style.display = 'none';
+      ensureAudioUnlocked();
+      initWebSocket();
+      refreshDashboard();
+    } catch { errEl.textContent = 'Connection error.'; }
+  }
+
+  async function bootAuth() {
+    try {
+      const r = await apiFetch('/api/auth/status');
+      const d = await r.json();
+      if (!d.auth_required || d.authenticated) {
+        isAuthed = true;
+        authOverlay.style.display = 'none';
+        initWebSocket();
+        refreshDashboard();
+      } else {
+        isAuthed = false;
+        authOverlay.style.display = 'flex';
+      }
+    } catch {
+      isAuthed = true;
+      initWebSocket();
+    }
+  }
+
+  document.getElementById('pin-submit-btn').onclick = submitPin;
+  document.getElementById('pin-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitPin(); });
 
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.onclick = () => {
@@ -943,19 +1074,27 @@
       refreshDashboard();
     };
   });
-  document.querySelectorAll('.chip').forEach(ch => ch.onclick = () => sendUserMessage(ch.dataset.prompt));
+  document.querySelectorAll('.chip[data-prompt]').forEach(ch => ch.onclick = () => sendUserMessage(ch.dataset.prompt));
+  document.getElementById('clear-chat-btn').onclick = async () => {
+    await apiFetch('/api/chat/clear', { method: 'POST' });
+    chatMessages.innerHTML = '<div class="msg system">Chat cleared.</div>';
+    activeJarvisBubble = null; activeSubtitleText = '';
+    liveSubtitle.innerText = 'Chat cleared. Ready, Sir.';
+  };
+
   document.getElementById('mobile-drawer-btn').onclick = () => sidebar.classList.add('open');
   document.getElementById('mobile-close-btn').onclick = () => sidebar.classList.remove('open');
 
-  sendBtn.onclick = () => { if (userInput.value.trim()) { sendUserMessage(userInput.value); userInput.value = ''; } };
-  userInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && userInput.value.trim()) { sendUserMessage(userInput.value); userInput.value = ''; } });
+  sendBtn.onclick = () => { if (userInput.value.trim() || pendingImageBase64) { sendUserMessage(userInput.value); userInput.value = ''; } };
+  userInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (userInput.value.trim() || pendingImageBase64)) { sendUserMessage(userInput.value); userInput.value = ''; } });
+  mobSendBtn.onclick = () => { if (mobInput.value.trim() || pendingImageBase64) { sendUserMessage(mobInput.value); mobInput.value = ''; } };
+  mobInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (mobInput.value.trim() || pendingImageBase64)) { sendUserMessage(mobInput.value); mobInput.value = ''; } });
 
-  mobSendBtn.onclick = () => { if (mobInput.value.trim()) { sendUserMessage(mobInput.value); mobInput.value = ''; } };
-  mobInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && mobInput.value.trim()) { sendUserMessage(mobInput.value); mobInput.value = ''; } });
+  document.getElementById('img-input').onchange = (e) => handleSelectedImageFile(e.target.files[0]);
+  document.getElementById('mob-img-input').onchange = (e) => handleSelectedImageFile(e.target.files[0]);
+  document.getElementById('clear-image-btn').onclick = clearPendingImage;
 
-  micBtn.onclick = toggleVoiceNote;
-  mobMicBtn.onclick = toggleVoiceNote;
-
+  micBtn.onclick = toggleVoiceNote; mobMicBtn.onclick = toggleVoiceNote;
   btnWake.onclick = () => {
     wakeEnabled = !wakeEnabled;
     btnWake.classList.toggle('active', wakeEnabled);
@@ -974,14 +1113,9 @@
   document.getElementById('add-task-btn').onclick = async () => {
     const task = document.getElementById('new-task-text').value.trim();
     if (!task) return;
-    await fetch('/api/todos', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        task,
-        due_time: document.getElementById('new-task-time').value || null,
-        recurrence: document.getElementById('new-task-rec').value
-      })
+    await apiFetch('/api/todos', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task, due_time: document.getElementById('new-task-time').value || null, recurrence: document.getElementById('new-task-rec').value })
     });
     document.getElementById('new-task-text').value = '';
     refreshDashboard();
@@ -990,47 +1124,34 @@
   document.getElementById('save-contact-btn').onclick = async () => {
     const name = document.getElementById('c-name').value.trim();
     if (!name) return;
-    await fetch('/api/contacts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name,
-        phone: document.getElementById('c-phone').value.trim(),
-        email: document.getElementById('c-email').value.trim()
-      })
+    await apiFetch('/api/contacts', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, phone: document.getElementById('c-phone').value.trim(), email: document.getElementById('c-email').value.trim() })
     });
-    document.getElementById('c-name').value = '';
-    document.getElementById('c-phone').value = '';
-    document.getElementById('c-email').value = '';
+    document.getElementById('c-name').value = ''; document.getElementById('c-phone').value = ''; document.getElementById('c-email').value = '';
     refreshDashboard();
   };
 
   document.getElementById('vcf-upload').onchange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    const form = new FormData();
-    form.append('file', file);
-    const r = await fetch('/api/contacts/import', { method: 'POST', body: form });
+    const form = new FormData(); form.append('file', file);
+    const r = await apiFetch('/api/contacts/import', { method: 'POST', body: form });
     const d = await r.json();
     addChatBubble('system', d.message || 'Contacts imported.');
     refreshDashboard();
   };
 
+  if (new URLSearchParams(location.search).get('wake') === '1') {
+    wakeEnabled = true; btnWake.classList.add('active'); btnWake.innerText = '🎙️ Hi Jarvis: ON';
+    setTimeout(() => { ensureAudioUnlocked(); startRecognition(); }, 600);
+  }
+
   window.addEventListener('pointerdown', () => ensureAudioUnlocked(), { once: true });
   initScene();
   initRecognition();
-  initWebSocket();
+  bootAuth();
   animate();
-  // Auto-enable "Hi Jarvis" listening when opened with ?wake=1 (or from Assistant shortcut)
-  if (new URLSearchParams(location.search).get('wake') === '1') {
-    wakeEnabled = true;
-    btnWake.classList.add('active');
-    btnWake.innerText = '🎙️ Hi Jarvis: ON';
-    setTimeout(() => {
-      ensureAudioUnlocked();
-      startRecognition();
-    }, 600);
-  }
 </script>
 </body>
 </html>

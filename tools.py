@@ -1,12 +1,14 @@
 """
-tools.py — Active Function-Calling Tools for JARVIS 2.2
+tools.py — Active Function-Calling Tools for JARVIS 2.3
 Includes Phonebook Contacts (.vcf import), Call/WhatsApp/SIM routing,
-Real Gmail SMTP, Timed Daily Reminders, Learned Skills, Music, & Social Apps.
+Real Gmail SMTP, Timed Daily Reminders, Learned Skills, Music, Weather,
+Morning Briefing & Social Apps.
 """
 
 import os
 import re
 import sys
+import quopri
 import smtplib
 import logging
 import webbrowser
@@ -21,6 +23,7 @@ from memory import memory
 logger = logging.getLogger("JarvisTools")
 
 
+# ------------------------------------------------------------------ helpers
 def _parse_due_time(due_time: Optional[str]) -> Optional[str]:
     if not due_time or not due_time.strip():
         return None
@@ -42,21 +45,47 @@ def _parse_due_time(due_time: Optional[str]) -> Optional[str]:
     return None
 
 
+def _readable_time(iso_value: str) -> str:
+    try:
+        return datetime.fromisoformat(iso_value).strftime("%I:%M %p")
+    except (ValueError, TypeError):
+        return str(iso_value)
+
+
+def _vcf_field(block: str, field: str) -> str:
+    """Read one vCard field, decoding QUOTED-PRINTABLE values (common in Android exports)."""
+    m = re.search(rf"^{field}((?:;[^:\r\n]*)?):(.+)$", block, flags=re.MULTILINE | re.IGNORECASE)
+    if not m:
+        return ""
+    params, value = m.group(1), m.group(2).strip()
+    if "QUOTED-PRINTABLE" in params.upper():
+        try:
+            value = quopri.decodestring(value.encode("utf-8")).decode("utf-8", errors="ignore")
+        except Exception:
+            pass
+    return value
+
+
 def import_vcf_contacts(vcf_text: str) -> int:
     """Parse an Android/iOS .vcf (vCard) export and save contacts into SQLite."""
+    # Unfold soft line breaks (quoted-printable "=\n" and RFC folded lines).
+    vcf_text = re.sub(r"=\r?\n", "", vcf_text)
+    vcf_text = re.sub(r"\r?\n[ \t]", "", vcf_text)
+
     imported = 0
-    blocks = re.split(r"END:VCARD", vcf_text, flags=re.IGNORECASE)
-    for block in blocks:
+    for block in re.split(r"END:VCARD", vcf_text, flags=re.IGNORECASE):
         if "BEGIN:VCARD" not in block.upper():
             continue
-        fn_match = re.search(r"^FN(?:;[^:]*)?:(.+)$", block, flags=re.MULTILINE | re.IGNORECASE)
-        n_match = re.search(r"^N(?:;[^:]*)?:([^;\r\n]+)", block, flags=re.MULTILINE | re.IGNORECASE)
-        tel_match = re.search(r"^TEL(?:;[^:]*)?:(.+)$", block, flags=re.MULTILINE | re.IGNORECASE)
-        email_match = re.search(r"^EMAIL(?:;[^:]*)?:(.+)$", block, flags=re.MULTILINE | re.IGNORECASE)
 
-        name = (fn_match.group(1) if fn_match else (n_match.group(1) if n_match else "")).strip()
-        phone = re.sub(r"[^\d+]", "", tel_match.group(1)) if tel_match else ""
-        email = email_match.group(1).strip() if email_match else ""
+        name = _vcf_field(block, "FN")
+        if not name:
+            parts = _vcf_field(block, "N").split(";")  # Family;Given;Additional;Prefix;Suffix
+            given = parts[1].strip() if len(parts) > 1 else ""
+            family = parts[0].strip() if parts else ""
+            name = f"{given} {family}".strip()
+
+        phone = re.sub(r"[^\d+]", "", _vcf_field(block, "TEL"))
+        email = _vcf_field(block, "EMAIL")
 
         if name and (phone or email):
             memory.save_contact(name=name, phone=phone, email=email)
@@ -64,18 +93,111 @@ def import_vcf_contacts(vcf_text: str) -> int:
     return imported
 
 
-def play_music(name: str) -> Dict[str, Any]:
+# ------------------------------------------------------------------ weather & briefing
+_WMO_WEATHER = {
+    0: "clear sky", 1: "mainly clear", 2: "partly cloudy", 3: "overcast",
+    45: "foggy", 48: "freezing fog",
+    51: "light drizzle", 53: "drizzle", 55: "heavy drizzle", 56: "freezing drizzle", 57: "heavy freezing drizzle",
+    61: "light rain", 63: "moderate rain", 65: "heavy rain", 66: "freezing rain", 67: "heavy freezing rain",
+    71: "light snow", 73: "moderate snow", 75: "heavy snow", 77: "snow grains",
+    80: "light rain showers", 81: "rain showers", 82: "violent rain showers",
+    85: "snow showers", 86: "heavy snow showers",
+    95: "thunderstorm", 96: "thunderstorm with hail", 99: "severe thunderstorm with hail",
+}
+
+
+def get_weather(city: str = "") -> Dict[str, Any]:
+    """Fetch instant live weather via free Open-Meteo (no API key needed)."""
+    import requests
+
+    target_city = (city or "").strip()
+    if not target_city:
+        saved = memory.recall("home_city")
+        target_city = saved["value"] if saved else "Lahore"
+
     try:
-        from musicLibrary import music
-        key = name.strip().lower()
+        geo = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": target_city, "count": 1, "language": "en"},
+            timeout=4,
+        ).json()
+        results = geo.get("results") or []
+        if not results:
+            return {"status": "not_found", "message": f"I could not find weather data for {target_city}, Sir."}
+
+        loc = results[0]
+        lat, lon = loc["latitude"], loc["longitude"]
+        resolved_name = loc.get("name", target_city)
+
+        wx = requests.get(
+            "https://api.open-meteo.com/v1/forecast",
+            params={
+                "latitude": lat,
+                "longitude": lon,
+                "current": "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m",
+                "daily": "temperature_2m_max,temperature_2m_min",
+                "timezone": "auto",
+                "forecast_days": 1,
+            },
+            timeout=4,
+        ).json()
+
+        cur = wx.get("current", {})
+        daily = wx.get("daily", {})
+        temp = cur.get("temperature_2m")
+        feels = cur.get("apparent_temperature")
+        humidity = cur.get("relative_humidity_2m")
+        cond = _WMO_WEATHER.get(cur.get("weather_code", 0), "clear")
+        t_max = (daily.get("temperature_2m_max") or [None])[0]
+        t_min = (daily.get("temperature_2m_min") or [None])[0]
+
+        msg = f"In {resolved_name}, it is currently {temp} degrees Celsius with {cond}, feels like {feels} degrees, humidity {humidity} percent."
+        if t_max is not None and t_min is not None:
+            msg += f" Today's high is {t_max} and low is {t_min} degrees."
+        return {"status": "success", "city": resolved_name, "temperature_c": temp, "condition": cond, "message": msg}
+    except Exception as e:
+        logger.error("get_weather error: %s", e)
+        return {"status": "error", "message": "Weather service is temporarily unavailable, Sir."}
+
+
+def morning_briefing(city: str = "") -> Dict[str, Any]:
+    """Combined briefing with time, live weather, and pending tasks."""
+    now_str = datetime.now().strftime("%A, %I:%M %p")
+    wx = get_weather(city)
+    todos = get_todo().get("todos", [])
+    if todos:
+        task_parts = []
+        for t in todos[:5]:
+            if t.get("due_time"):
+                task_parts.append(f"{t['task']} at {_readable_time(t['due_time'])}")
+            else:
+                task_parts.append(t["task"])
+        tasks_text = f"You have {len(todos)} pending tasks: " + ", ".join(task_parts) + "."
+    else:
+        tasks_text = "Your schedule is currently clear with no pending tasks."
+
+    return {
+        "status": "success",
+        "message": f"Good day, Sir. It is {now_str}. {wx.get('message', '')} {tasks_text}".replace("  ", " "),
+    }
+
+
+# ------------------------------------------------------------------ media / web
+def play_music(name: str) -> Dict[str, Any]:
+    key = name.strip().lower()
+    search_url = f"https://www.youtube.com/results?search_query={quote_plus(name)}"
+    try:
+        try:
+            from musicLibrary import music  # optional personal library {song: url}
+        except ImportError:
+            music = {}
         url = music.get(key)
         if not url:
-            search_url = f"https://www.youtube.com/results?search_query={quote_plus(name)}"
             return {"status": "search", "song": name, "url": search_url, "open_url": search_url, "message": f"Searching YouTube for {name}"}
         return {"status": "success", "song": key, "url": url, "open_url": url, "message": f"Playing {key}"}
     except Exception as e:
         logger.error("play_music error: %s", e)
-        return {"status": "error", "song": name, "url": "", "message": "Could not start music"}
+        return {"status": "search", "song": name, "url": search_url, "open_url": search_url, "message": f"Searching YouTube for {name}"}
 
 
 def open_platform(platform: str, query: str = "") -> Dict[str, Any]:
@@ -97,6 +219,24 @@ def open_platform(platform: str, query: str = "") -> Dict[str, Any]:
     return {"status": "success", "platform": p, "open_url": target_url, "message": f"Opening {platform}, Sir."}
 
 
+def web_search(query: str) -> Dict[str, Any]:
+    try:
+        try:
+            from ddgs import DDGS
+        except ImportError:
+            from duckduckgo_search import DDGS
+        with DDGS(timeout=4) as ddgs:
+            results = list(ddgs.text(query, max_results=3))
+        if results:
+            snippets = [f"{r.get('title', '')}: {r.get('body', '')}" for r in results]
+            return {"status": "success", "results": results, "message": " | ".join(snippets)}
+        return {"status": "empty", "results": [], "message": f"No web results found for {query}"}
+    except Exception as e:
+        logger.error("web_search error: %s", e)
+        return {"status": "error", "results": [], "message": "Web search timed out or unavailable"}
+
+
+# ------------------------------------------------------------------ contacts / calls
 def call_contact(name: str, via: str = "ask") -> Dict[str, Any]:
     """Look up a contact in the phonebook and initiate a SIM or WhatsApp call."""
     contact = memory.get_contact(name)
@@ -120,14 +260,32 @@ def call_contact(name: str, via: str = "ask") -> Dict[str, Any]:
     }
 
 
+def save_contact(name: str, phone: str = "", email: str = "", notes: str = "") -> Dict[str, Any]:
+    try:
+        contact = memory.save_contact(name=name, phone=phone, email=email, notes=notes)
+        return {"status": "success", "contact": contact, "message": f"Saved contact {contact['name']}"}
+    except Exception as e:
+        logger.error("save_contact error: %s", e)
+        return {"status": "error", "message": "Could not save contact"}
+
+
+def get_contact(name: str) -> Dict[str, Any]:
+    contact = memory.get_contact(name)
+    if not contact:
+        return {"status": "not_found", "contact": None, "message": f"No contact saved for {name}"}
+    return {"status": "found", "contact": contact, "message": f"Found contact {contact['display_name']}"}
+
+
+# ------------------------------------------------------------------ todos
 def add_todo(task: str, due_time: Optional[str] = None, recurrence: str = "once") -> Dict[str, Any]:
     try:
         parsed_due = _parse_due_time(due_time)
         item = memory.add_todo(task, due_time=parsed_due, recurrence=recurrence)
         msg = f"Todo added: {item['task']}"
         if parsed_due:
-            readable = datetime.fromisoformat(parsed_due).strftime("%I:%M %p")
-            msg += f" (reminder set for {readable}, {item['recurrence']})"
+            msg += f" (reminder set for {_readable_time(parsed_due)}, {item['recurrence']})"
+        elif due_time:
+            msg += f" (I could not understand the time '{due_time}', so no reminder was set)"
         return {"status": "success", "todo_id": item["id"], "task": item["task"], "due_time": parsed_due, "message": msg}
     except Exception as e:
         logger.error("add_todo error: %s", e)
@@ -162,8 +320,7 @@ def daily_plan() -> Dict[str, Any]:
         tasks_summary = []
         for row in result["todos"]:
             if row.get("due_time"):
-                t_str = datetime.fromisoformat(row["due_time"]).strftime("%I:%M %p")
-                tasks_summary.append(f"{row['task']} at {t_str}")
+                tasks_summary.append(f"{row['task']} at {_readable_time(row['due_time'])}")
             else:
                 tasks_summary.append(row["task"])
         return {
@@ -174,22 +331,7 @@ def daily_plan() -> Dict[str, Any]:
     return {"status": "error", "todos": [], "message": "Could not prepare plan"}
 
 
-def save_contact(name: str, phone: str = "", email: str = "", notes: str = "") -> Dict[str, Any]:
-    try:
-        contact = memory.save_contact(name=name, phone=phone, email=email, notes=notes)
-        return {"status": "success", "contact": contact, "message": f"Saved contact {contact['name']}"}
-    except Exception as e:
-        logger.error("save_contact error: %s", e)
-        return {"status": "error", "message": "Could not save contact"}
-
-
-def get_contact(name: str) -> Dict[str, Any]:
-    contact = memory.get_contact(name)
-    if not contact:
-        return {"status": "not_found", "contact": None, "message": f"No contact saved for {name}"}
-    return {"status": "found", "contact": contact, "message": f"Found contact {contact['display_name']}"}
-
-
+# ------------------------------------------------------------------ memory / skills
 def remember(key: str, value: str) -> Dict[str, Any]:
     try:
         item = memory.remember(key, value)
@@ -223,6 +365,7 @@ def learn_skill(name: str, trigger_phrase: str, instructions: str) -> Dict[str, 
         return {"status": "error", "message": "Could not learn skill"}
 
 
+# ------------------------------------------------------------------ messaging (confirmation flow)
 def _store_pending(action_type: str, params: Dict[str, Any]) -> Dict[str, Any]:
     if action_type == "email":
         desc = f"Send email to {params['to']} with subject '{params['subject']}' saying '{params['body']}'"
@@ -272,23 +415,6 @@ def send_whatsapp(contact: str = "", message: str = "", contact_or_phone: str = 
     action_kind = "sms" if channel.strip().lower() in ("sim", "sms") else "whatsapp"
     return _store_pending(action_kind, {"contact": target, "display_name": display_name, "message": message})
 
-
-def web_search(query: str) -> Dict[str, Any]:
-    try:
-        try:
-            from ddgs import DDGS
-        except ImportError:
-            from duckduckgo_search import DDGS
-        with DDGS(timeout=4) as ddgs:
-            results = list(ddgs.text(query, max_results=3))
-        if results:
-            snippets = [f"{r.get('title', '')}: {r.get('body', '')}" for r in results]
-            return {"status": "success", "results": results, "message": " | ".join(snippets)}
-        return {"status": "empty", "results": [], "message": f"No web results found for {query}"}
-    except Exception as e:
-        logger.error("web_search error: %s", e)
-        return {"status": "error", "results": [], "message": "Web search timed out or unavailable"}
-    
 
 def _send_email_smtp(to_addr: str, subject: str, body: str) -> Dict[str, Any]:
     gmail_user = os.getenv("GMAIL_USER", "").strip()
@@ -342,21 +468,44 @@ def execute_pending_action(action_id: int, confirm: bool) -> Dict[str, Any]:
 
     action_type = pending["action_type"]
     payload = pending["payload"]
-    memory.resolve_pending_action(action_id, "completed")
     try:
         if action_type == "email":
-            return _send_email_smtp(payload["to"], payload["subject"], payload["body"])
-        if action_type == "whatsapp":
-            return _send_whatsapp_real(payload["contact"], payload["message"])
-        if action_type == "sms":
+            result = _send_email_smtp(payload["to"], payload["subject"], payload["body"])
+        elif action_type == "whatsapp":
+            result = _send_whatsapp_real(payload["contact"], payload["message"])
+        elif action_type == "sms":
             sms_url = f"sms:{payload['contact']}?body={quote_plus(payload['message'])}"
-            return {"status": "sent", "open_url": sms_url, "message": f"Opening SIM SMS for {payload.get('display_name') or payload['contact']}, Sir."}
-        return {"message": "Action completed, Sir.", "status": "completed"}
+            result = {"status": "sent", "open_url": sms_url, "message": f"Opening SIM SMS for {payload.get('display_name') or payload['contact']}, Sir."}
+        else:
+            result = {"message": "Action completed, Sir.", "status": "completed"}
+        memory.resolve_pending_action(action_id, "completed")
+        return result
     except Exception as e:
+        logger.error("execute_pending_action error: %s", e)
+        memory.resolve_pending_action(action_id, "failed")
         return {"message": f"Could not complete {action_type}, Sir: {e}", "status": "error"}
 
 
+# ------------------------------------------------------------------ registry
 TOOLS = [
+    {
+        "name": "get_weather",
+        "func": get_weather,
+        "description": "Get live current temperature and weather forecast for any city.",
+        "parameters": {
+            "type": "object",
+            "properties": {"city": {"type": "string", "description": "City name, e.g. Lahore or London"}},
+        },
+    },
+    {
+        "name": "morning_briefing",
+        "func": morning_briefing,
+        "description": "Give a daily briefing with current time, live weather, and pending tasks.",
+        "parameters": {
+            "type": "object",
+            "properties": {"city": {"type": "string", "description": "Optional city name"}},
+        },
+    },
     {
         "name": "play_music",
         "func": play_music,
