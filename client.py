@@ -16,8 +16,8 @@ from dotenv import load_dotenv
 from groq import Groq, AsyncGroq
 
 import memory as memory_module
+import tools as tools_module
 from tools import TOOLS, FUNCS, execute_pending_action
-
 load_dotenv()
 logger = logging.getLogger("JarvisClient")
 
@@ -78,7 +78,7 @@ class JarvisAI:
         return "en"
 
     def _get_system_prompt(self, language: str = "en") -> str:
-        memory_context = memory_module.memory.get_system_prompt_context()
+        memory_context = tools_module.memory.get_system_prompt_context()
         now_str = datetime.now().strftime("%Y-%m-%d %I:%M %p")
 
         if language == "ur":
@@ -112,35 +112,25 @@ RULES:
 5. NO MARKDOWN OR EMOJIS: Never output *, #, ---, bullet points, or emojis."""
 
     # ------------------------------------------------------------------ quick intents (no LLM)
-    def _check_pending_confirmation(self, user_text: str) -> Optional[Tuple[str, str, Optional[str]]]:
-        pending = memory_module.memory.get_latest_pending_action()
-        if not pending:
-            return None
-
-        clean = re.sub(r"[^\w\s]", "", user_text.lower()).strip()
-        words = clean.split()
-        confirm_exact = {
-            "yes", "haan", "ha", "han", "kar do", "karo", "bhej do", "send", "send it",
-            "confirm", "proceed", "sure", "yup", "ok", "okay", "theek hai", "ji", "go ahead",
-            "haan kar do", "haan bhej do", "yes send it", "yes please", "ok send it", "yes go ahead",
-        }
-        cancel_exact = {"no", "nahin", "nahi", "na", "mat bhejo", "cancel", "stop", "rehne do", "dont", "abort", "chhoro"}
-        confirm_first = {"yes", "haan", "confirm", "ok", "okay", "sure"}
-        cancel_first = {"no", "nahin", "nahi", "cancel", "mat", "stop"}
-
-        # Prefix rules only apply to very short replies so "send an email to Ali"
-        # or "no I want to call Sam" are NOT mistaken for answers to the pending action.
-        is_confirm = clean in confirm_exact or (len(words) <= 2 and words and words[0] in confirm_first)
-        is_cancel = clean in cancel_exact or (len(words) <= 2 and words and words[0] in cancel_first)
-
-        if is_confirm:
-            res = execute_pending_action(pending["id"], confirm=True)
-            return (res["message"], "joy", res.get("open_url"))
-        if is_cancel:
-            res = execute_pending_action(pending["id"], confirm=False)
-            return (res["message"], "neutral", None)
-        return None
-
+   def _check_pending_confirmation(self, user_text: str) -> Optional[Tuple[str, str, Optional[str]]]:
+     pending = tools_module.memory.get_latest_pending_action()
+     if not pending:
+         return None
+     clean = re.sub(r"[^\w\s]", "", user_text.lower()).strip()
+     confirm_words = {
+         "yes", "haan", "ha", "han", "kar do", "karo", "bhej do", "send", "send it",
+         "confirm", "proceed", "sure", "yup", "ok", "okay", "theek hai", "ji", "go ahead",
+         "haan send kar do", "ok send", "ok send it", "ok kar do", "ok bhej do",
+     }
+     cancel_words = {"no", "nahin", "nahi", "na", "mat bhejo", "cancel", "stop", "rehne do", "dont", "abort", "chhoro"}
+     if clean in confirm_words or any(clean.startswith(w + " ") for w in ("yes", "haan", "send", "confirm")):
+         res = execute_pending_action(pending["id"], confirm=True)
+         return (res["message"], "joy", res.get("open_url"))
+     if clean in cancel_words or any(clean.startswith(w + " ") for w in ("no", "cancel", "nahin", "mat")):
+         res = execute_pending_action(pending["id"], confirm=False)
+         return (res["message"], "neutral", None)
+     return None
+ 
     def _check_call_intent(self, user_text: str) -> Optional[Tuple[str, str, str]]:
         clean = re.sub(r"[^\w\s]", "", user_text.lower()).strip()
         end_words = {"ok bye", "bye bye", "bye", "goodbye", "end call", "disconnect", "call kato", "band karo", "alvida", "exit call"}
