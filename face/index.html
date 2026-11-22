@@ -11,7 +11,7 @@
   <link rel="icon" type="image/jpeg" href="/favicon.jpg">
   <style>
     :root {
-      --bg: #030712; --panel: rgba(15, 23, 42, 0.92); --border: rgba(56, 189, 248, 0.25);
+      --bg: #030712; --panel: rgba(15, 23, 42, 0.94); --border: rgba(56, 189, 248, 0.25);
       --accent: #38bdf8; --green: #10b981; --red: #ef4444; --text: #f1f5f9; --muted: #94a3b8;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -20,8 +20,8 @@
       background: radial-gradient(circle at 35% 40%, #0f172a 0%, #030712 100%);
       color: var(--text); font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
     }
-    .app-shell { display: grid; grid-template-columns: 1fr 390px; width: 100%; height: 100dvh; position: relative; }
-    .stage { position: relative; height: 100%; overflow: hidden; }
+    .app-shell { display: grid; grid-template-columns: 1fr 390px; width: 100%; height: 100dvh; overflow: hidden; position: relative; }
+    .stage { position: relative; height: 100%; min-height: 0; overflow: hidden; }
     #canvas-container { position: absolute; inset: 0; z-index: 10; cursor: grab; }
     #canvas-container:active { cursor: grabbing; }
     canvas { display: block; width: 100%; height: 100%; touch-action: none; }
@@ -94,18 +94,20 @@
       padding: 7px 16px; border-radius: 999px; font-size: 12px; font-weight: 600; cursor: pointer; display: none; z-index: 200; white-space: nowrap;
     }
     #webcam-box {
-      position: absolute; bottom: 96px; right: 16px; width: 190px; height: 142px;
+      position: absolute; bottom: 116px; right: 16px; width: 190px; height: 142px;
       background: #000; border: 2px solid var(--accent); border-radius: 14px; overflow: hidden; display: none; flex-direction: column; z-index: 95;
     }
     #webcam-header { background: rgba(15,23,42,0.85); padding: 4px 10px; font-size: 10px; color: var(--accent); font-weight: 700; display: flex; justify-content: space-between; }
     #user-webcam { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
 
+    /* CLEAN READABLE SUBTITLE BOX (NO CUT-OFF ON URDU OR ENGLISH) */
     #live-subtitle {
       position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
-      max-width: calc(100% - 32px); max-height: 76px; overflow-y: auto;
-      background: rgba(15,23,42,0.86); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
-      border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; padding: 9px 18px;
-      font-size: 14px; line-height: 1.45; text-align: center; z-index: 90; unicode-bidi: plaintext;
+      width: min(680px, calc(100% - 32px)); max-height: 98px; overflow-y: auto;
+      background: rgba(10, 17, 34, 0.90); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+      border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 16px; padding: 11px 20px;
+      font-size: 14.5px; line-height: 1.75; text-align: center; z-index: 90; unicode-bidi: plaintext;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.6);
     }
 
     #mobile-bottom-dock {
@@ -126,52 +128,53 @@
     .mob-btn.primary { background: #0284c7; border-color: var(--accent); color: #fff; }
     .mob-btn.mic-active { background: var(--red); border-color: var(--red); color: #fff; }
 
+    /* FIXED HEIGHT SIDEBAR SO INPUT BAR NEVER GETS PUSHED OFF SCREEN */
     .sidebar {
       background: var(--panel); border-left: 1px solid var(--border);
-      display: flex; flex-direction: column; height: 100%; z-index: 150;
+      display: flex; flex-direction: column; height: 100%; min-height: 0; overflow: hidden; z-index: 150;
       backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
     }
     #mobile-close-bar {
-      display: none; justify-content: space-between; align-items: center;
+      display: none; flex-shrink: 0; justify-content: space-between; align-items: center;
       padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.1); background: rgba(2,6,23,0.85);
     }
-    .tabs { display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid rgba(255,255,255,0.1); background: rgba(2,6,23,0.6); }
+    .tabs { flex-shrink: 0; display: grid; grid-template-columns: repeat(4, 1fr); border-bottom: 1px solid rgba(255,255,255,0.1); background: rgba(2,6,23,0.6); }
     .tab-btn {
       background: transparent; border: none; color: var(--muted); padding: 12px 6px;
       font-size: 12px; font-weight: 700; cursor: pointer; border-bottom: 2px solid transparent;
     }
     .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); background: rgba(56,189,248,0.08); }
-    .tab-pane { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+    .tab-pane { display: none; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
     .tab-pane.active { display: flex; }
 
-    .chat-messages { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
-    .msg { max-width: 88%; padding: 9px 13px; border-radius: 14px; font-size: 13px; line-height: 1.5; unicode-bidi: plaintext; word-wrap: break-word; }
+    .chat-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+    .msg { max-width: 88%; padding: 9px 13px; border-radius: 14px; font-size: 13px; line-height: 1.65; unicode-bidi: plaintext; word-wrap: break-word; }
     .msg.user { align-self: flex-end; background: #0284c7; color: #fff; border-bottom-right-radius: 4px; }
     .msg.jarvis { align-self: flex-start; background: rgba(30,41,59,0.95); border: 1px solid rgba(56,189,248,0.2); border-bottom-left-radius: 4px; }
     .msg.system { align-self: center; font-size: 11px; color: var(--muted); background: rgba(255,255,255,0.05); }
     .msg a { color: #7dd3fc; text-decoration: underline; }
     .msg img.chat-thumb { display: block; max-width: 180px; border-radius: 8px; margin-bottom: 6px; }
 
-    .quick-chips { display: flex; gap: 6px; padding: 6px 12px; overflow-x: auto; border-top: 1px solid rgba(255,255,255,0.06); align-items: center; }
+    .quick-chips { flex-shrink: 0; display: flex; gap: 6px; padding: 7px 12px; overflow-x: auto; border-top: 1px solid rgba(255,255,255,0.06); align-items: center; }
     .chip { flex: 0 0 auto; background: rgba(56,189,248,0.1); border: 1px solid rgba(56,189,248,0.25); color: #bae6fd; border-radius: 999px; padding: 4px 10px; font-size: 11px; cursor: pointer; }
     .chip.danger { background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.35); color: #fca5a5; }
 
     #image-preview-bar {
-      display: none; align-items: center; justify-content: space-between; padding: 6px 12px;
+      flex-shrink: 0; display: none; align-items: center; justify-content: space-between; padding: 6px 12px;
       background: rgba(56,189,248,0.12); border-top: 1px solid rgba(56,189,248,0.25); font-size: 11px; color: #bae6fd;
     }
 
-    .chat-composer { display: flex; gap: 6px; padding: 10px 12px; border-top: 1px solid rgba(255,255,255,0.1); background: rgba(2,6,23,0.75); align-items: center; }
-    .chat-composer input[type="text"] { flex: 1; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16); border-radius: 12px; padding: 9px 12px; color: #fff; font-size: 13px; outline: none; }
+    .chat-composer { flex-shrink: 0; display: flex; gap: 6px; padding: 10px 12px; border-top: 1px solid rgba(255,255,255,0.1); background: rgba(2,6,23,0.85); align-items: center; }
+    .chat-composer input[type="text"] { flex: 1; min-width: 0; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16); border-radius: 12px; padding: 9px 12px; color: #fff; font-size: 13px; outline: none; }
     .chat-composer input[type="text"]:focus { border-color: var(--accent); }
-    .send-btn { background: #0284c7; color: #fff; border: none; border-radius: 12px; padding: 9px 13px; font-size: 13px; font-weight: 700; cursor: pointer; }
+    .send-btn { flex-shrink: 0; background: #0284c7; color: #fff; border: none; border-radius: 12px; padding: 9px 13px; font-size: 13px; font-weight: 700; cursor: pointer; }
     .mic-round { background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.16); color: #e2e8f0; width: 36px; height: 36px; border-radius: 12px; cursor: pointer; font-size: 15px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
     .mic-round.active { background: var(--red); border-color: var(--red); color: #fff; }
 
-    .pane-body { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+    .pane-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
     .card { background: rgba(30,41,59,0.7); border: 1px solid rgba(255,255,255,0.09); border-radius: 12px; padding: 10px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
     .card-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-    .mini-form { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .mini-form { flex-shrink: 0; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,0.08); }
     .mini-form input { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.15); border-radius: 8px; padding: 7px 10px; color: #fff; font-size: 12px; outline: none; }
     .small-btn { background: rgba(56,189,248,0.16); border: 1px solid var(--border); color: #7dd3fc; padding: 5px 9px; border-radius: 8px; font-size: 11px; font-weight: 600; cursor: pointer; text-decoration: none; }
 
@@ -182,8 +185,8 @@
       #status-pill { font-size: 9.5px; padding: 4px 8px; }
       #volume-slider { width: 50px; }
       #call-banner, #audio-prompt { top: 88px; }
-      #live-subtitle { bottom: 66px; width: calc(100% - 20px); max-width: none; max-height: 62px; padding: 7px 12px; font-size: 12px; border-radius: 12px; }
-      #webcam-box { width: 120px; height: 90px; bottom: 136px; right: 10px; }
+      #live-subtitle { bottom: 68px; width: calc(100% - 20px); max-height: 78px; padding: 8px 12px; font-size: 12.5px; border-radius: 12px; line-height: 1.6; }
+      #webcam-box { width: 120px; height: 90px; bottom: 152px; right: 10px; }
       #mobile-bottom-dock { display: flex; }
       #mobile-close-bar { display: flex; }
       .sidebar { position: fixed; inset: 0 0 0 auto; width: 100vw; max-width: 420px; transform: translateX(100%); transition: transform 0.25s ease; }
@@ -203,7 +206,6 @@
   </script>
 </head>
 <body>
-<!-- PIN LOCK SCREEN -->
 <div id="auth-overlay">
   <div class="auth-card">
     <h2>🔒 J.A.R.V.I.S</h2>
@@ -339,6 +341,7 @@
   let currentState = 'idle', currentSentiment = 'neutral';
   let ws = null, recognition = null, isRecognizing = false, wakeEnabled = false;
   let audioQueue = [], isPlayingAudio = false, masterVolume = 1.0;
+  let audioPlaybackGen = 0, currentVoiceRms = 0; // Prevents double-voice race + drives expressive gestures
   let mediaRecorder = null, voiceNoteChunks = [], isRecordingVoiceNote = false;
   let audioCtx = null, analyser = null, audioGainNode = null, audioSourceNode = null, isAudioInit = false;
   let mouthLevel = 0, mouthTarget = 0;
@@ -354,6 +357,9 @@
   let avatarLoaded = false, introSent = false;
   let entranceActive = false, entranceElapsed = 0, walkPhase = 0;
   const ENTRANCE_DURATION = 2.6;
+
+  // Smooth bone interpolation cache for natural body language
+  const poseState = {};
 
   const statusDot = document.getElementById('status-dot');
   const statusText = document.getElementById('status-text');
@@ -380,15 +386,17 @@
     const headers = new Headers(options.headers || {});
     if (authToken) headers.set('Authorization', `Bearer ${authToken}`);
     return fetch(url, { ...options, headers, credentials: 'same-origin' }).then(res => {
-      if (res.status === 401) {
-        isAuthed = false;
-        authOverlay.style.display = 'flex';
-      }
+      if (res.status === 401) { isAuthed = false; authOverlay.style.display = 'flex'; }
       return res;
     });
   }
 
-  function scrollDown(el) { requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; }); }
+  function scrollDown(el) {
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+      setTimeout(() => { el.scrollTop = el.scrollHeight; }, 40);
+    });
+  }
 
   function setState(state, sentiment = null) {
     currentState = state;
@@ -398,13 +406,6 @@
     statusDot.style.boxShadow = `0 0 10px ${c}`;
     statusText.innerText = state.toUpperCase();
     statusText.style.color = c;
-    if (currentVrm?.expressionManager) {
-      const em = currentVrm.expressionManager;
-      ['happy', 'joy', 'sad', 'sorrow', 'angry'].forEach(e => { try { em.setValue(e, 0); } catch {} });
-      if (state === 'speaking' && (currentSentiment === 'joy' || currentSentiment === 'fun')) {
-        try { em.setValue('happy', 0.35); em.setValue('joy', 0.35); } catch {}
-      }
-    }
   }
 
   function addChatBubble(role, text, actionUrl = null, thumbUrl = null) {
@@ -488,45 +489,138 @@
     document.getElementById('image-preview-bar').style.display = 'none';
   }
 
+  // =========================================================================
+  // EXPRESSIVE 3D VRM BODY LANGUAGE & EMOTIONS
+  // =========================================================================
   function getBone(name) { return currentVrm?.humanoid?.getNormalizedBoneNode(name) || null; }
 
-  function applyStandingPose(time) {
+  function lerpBone(name, tx, ty, tz, factor) {
+    const node = getBone(name);
+    if (!node) return;
+    const cur = poseState[name] || (poseState[name] = { x: tx, y: ty, z: tz });
+    cur.x += (tx - cur.x) * factor;
+    cur.y += (ty - cur.y) * factor;
+    cur.z += (tz - cur.z) * factor;
+    node.rotation.set(cur.x, cur.y, cur.z);
+  }
+
+  function applyExpressiveBodyLanguage(time, delta) {
     if (!currentVrm?.humanoid) return;
-    const breathe = Math.sin(time * 1.5) * 0.012;
-    const sway = Math.sin(time * 0.65) * 0.012;
+    const smooth = Math.min(1, delta * 6.5);
+    const breathe = Math.sin(time * 1.55) * 0.014;
+    const weightShift = Math.sin(time * 0.55) * 0.018;
 
-    const spine = getBone('spine'), chest = getBone('chest'), neck = getBone('neck');
-    if (spine) spine.rotation.set(breathe * 0.4, sway * 0.4, 0);
-    if (chest) chest.rotation.set(breathe, 0, 0);
+    // Base relaxed straight-down arms (closer to torso: 1.38 rad)
+    let spineX = breathe * 0.45, spineY = weightShift * 0.4, spineZ = weightShift * 0.35;
+    let chestX = breathe;
+    let neckX = breathe * 0.4, neckY = Math.sin(time * 0.45) * 0.04, neckZ = 0;
 
-    const lUp = getBone('leftUpperArm'), rUp = getBone('rightUpperArm');
-    const lLow = getBone('leftLowerArm'), rLow = getBone('rightLowerArm');
-    const lHand = getBone('leftHand'), rHand = getBone('rightHand');
-    const lLeg = getBone('leftUpperLeg'), rLeg = getBone('rightUpperLeg');
-    const lShin = getBone('leftLowerLeg'), rShin = getBone('rightLowerLeg');
+    let lUpX = 0.04, lUpY = 0.02, lUpZ = 1.38 + breathe * 0.12;
+    let rUpX = 0.04, rUpY = -0.02, rUpZ = -1.38 - breathe * 0.12;
+    let lLowX = 0.0, lLowY = -0.14, lLowZ = 0.06;
+    let rLowX = 0.0, rLowY = 0.14, rLowZ = -0.06;
+    let lHandZ = 0.06, rHandZ = -0.06;
 
-    let lArmX = 0.04 + breathe * 0.3, rArmX = 0.04 + breathe * 0.3;
-    let lLowY = -0.14, rLowY = 0.14;
-    if (isPlayingAudio) {
-      const g = Math.sin(time * 3.0);
-      lArmX += g * 0.06; rArmX -= g * 0.06;
-      lLowY = -0.22 - Math.max(0, g) * 0.2; rLowY = 0.22 + Math.max(0, -g) * 0.2;
+    // Occasional natural folded/relaxed-clasped arm pose during idle (cycles gently)
+    const idleFoldCycle = Math.sin(time * 0.22);
+    if (!isPlayingAudio && currentState === 'idle' && idleFoldCycle > 0.45) {
+      const foldAmt = Math.min(1, (idleFoldCycle - 0.45) * 2.2);
+      lUpX += -0.18 * foldAmt;
+      rUpX += -0.18 * foldAmt;
+      lUpZ = 1.38 - 0.12 * foldAmt;
+      rUpZ = -1.38 + 0.12 * foldAmt;
+      lLowY = -0.14 - 0.85 * foldAmt;
+      rLowY = 0.14 + 0.85 * foldAmt;
+      lLowZ = 0.25 * foldAmt;
+      rLowZ = -0.25 * foldAmt;
     }
-    if (lUp) lUp.rotation.set(lArmX, 0.04, 1.28 + breathe * 0.2);
-    if (rUp) rUp.rotation.set(rArmX, -0.04, -1.28 - breathe * 0.2);
-    if (lLow) lLow.rotation.set(0, lLowY, 0.05);
-    if (rLow) rLow.rotation.set(0, rLowY, -0.05);
-    if (lHand) lHand.rotation.set(0, 0, 0.04);
-    if (rHand) rHand.rotation.set(0, 0, -0.04);
-    if (lLeg) lLeg.rotation.set(0.01, 0, -0.015);
-    if (rLeg) rLeg.rotation.set(0.01, 0, 0.015);
-    if (lShin) lShin.rotation.set(0, 0, 0);
-    if (rShin) rShin.rotation.set(0, 0, 0);
 
-    if (neck) {
-      const tiltZ = currentState === 'listening' ? 0.05 : 0;
-      const nodX = currentState === 'thinking' ? -0.05 : (isPlayingAudio ? Math.sin(time * 2.4) * 0.03 : breathe * 0.5);
-      neck.rotation.set(nodX, Math.sin(time * 0.5) * 0.03, tiltZ);
+    // Attentive listening lean + gentle acknowledging head nod
+    if (currentState === 'listening') {
+      spineX += 0.045;
+      neckZ = -0.06;
+      neckX += Math.sin(time * 2.1) * 0.035;
+    }
+
+    // Thoughtful thinking pose: head tilt + right hand raised thoughtfully near chest/chin
+    if (currentState === 'thinking') {
+      neckX = -0.06;
+      neckY = 0.08;
+      neckZ = 0.07;
+      rUpX = -0.42;
+      rUpZ = -1.18;
+      rLowY = 1.25;
+      rLowZ = -0.28;
+      lUpX = -0.12;
+      lLowY = -0.65;
+    }
+
+    // Emotion-driven speaking gestures synced to voice amplitude
+    if (isPlayingAudio) {
+      const energy = Math.min(1, 0.35 + currentVoiceRms * 5.0);
+      const waveA = Math.sin(time * 3.1);
+      const waveB = Math.cos(time * 2.3);
+
+      spineX += 0.03;
+      neckX += Math.sin(time * 3.4) * 0.045 * energy;
+      neckY += Math.sin(time * 1.7) * 0.06 * energy;
+      neckZ += Math.cos(time * 1.9) * 0.035 * energy;
+
+      if (currentSentiment === 'joy' || currentSentiment === 'fun') {
+        // Expressive open welcoming gestures
+        lUpX = -0.28 - Math.max(0, waveA) * 0.22 * energy;
+        rUpX = -0.28 - Math.max(0, -waveA) * 0.22 * energy;
+        lUpZ = 1.22 - 0.10 * energy;
+        rUpZ = -1.22 + 0.10 * energy;
+        lLowY = -0.68 - Math.abs(waveB) * 0.35 * energy;
+        rLowY = 0.68 + Math.abs(waveB) * 0.35 * energy;
+      } else if (currentSentiment === 'sorrow') {
+        // Calm, empathetic posture
+        neckX += 0.05;
+        lUpX = -0.14; rUpX = -0.14;
+        lLowY = -0.45 - Math.max(0, waveA) * 0.2;
+        rLowY = 0.45;
+      } else {
+        // Confident Tony Stark Jarvis conversational hand gestures (alternating + occasional closed relax)
+        lUpX = -0.22 - Math.max(0, waveA) * 0.24 * energy;
+        rUpX = -0.22 - Math.max(0, -waveA) * 0.24 * energy;
+        lUpZ = 1.28 - Math.max(0, waveB) * 0.10;
+        rUpZ = -1.28 + Math.max(0, -waveB) * 0.10;
+        lLowY = -0.52 - Math.max(0, waveA) * 0.48 * energy;
+        rLowY = 0.52 + Math.max(0, -waveA) * 0.48 * energy;
+      }
+    }
+
+    lerpBone('spine', spineX, spineY, spineZ, smooth);
+    lerpBone('chest', chestX, 0, 0, smooth);
+    lerpBone('neck', neckX, neckY, neckZ, smooth);
+
+    lerpBone('leftUpperArm', lUpX, lUpY, lUpZ, smooth);
+    lerpBone('rightUpperArm', rUpX, rUpY, rUpZ, smooth);
+    lerpBone('leftLowerArm', lLowX, lLowY, lLowZ, smooth);
+    lerpBone('rightLowerArm', rLowX, rLowY, rLowZ, smooth);
+    lerpBone('leftHand', 0, 0, lHandZ, smooth);
+    lerpBone('rightHand', 0, 0, rHandZ, smooth);
+
+    lerpBone('leftUpperLeg', 0.01, 0, -0.012, smooth);
+    lerpBone('rightUpperLeg', 0.01, 0, 0.012, smooth);
+    lerpBone('leftLowerLeg', 0, 0, 0, smooth);
+    lerpBone('rightLowerLeg', 0, 0, 0, smooth);
+
+    // Facial emotion blendshapes
+    const em = currentVrm.expressionManager;
+    if (em) {
+      let targetHappy = 0, targetSad = 0;
+      if (isPlayingAudio || currentState === 'idle') {
+        if (currentSentiment === 'joy' || currentSentiment === 'fun') targetHappy = isPlayingAudio ? 0.42 : 0.18;
+        else if (currentSentiment === 'sorrow') targetSad = isPlayingAudio ? 0.35 : 0.12;
+      }
+      try {
+        em.setValue('happy', targetHappy);
+        em.setValue('joy', targetHappy);
+        em.setValue('sad', targetSad);
+        em.setValue('sorrow', targetSad);
+      } catch {}
     }
   }
 
@@ -580,12 +674,10 @@
       avatarPivot.add(vrm.scene);
       avatarPivot.position.set(-2.2, 0, 0);
       avatarPivot.rotation.y = Math.PI * 0.46;
-      applyStandingPose(0);
+      applyExpressiveBodyLanguage(0, 0.1);
       vrm.update(0);
 
-      avatarLoaded = true;
-      entranceActive = true;
-      entranceElapsed = 0;
+      avatarLoaded = true; entranceActive = true; entranceElapsed = 0;
       setState('entering');
     });
   }
@@ -619,14 +711,14 @@
           if (rLeg) rLeg.rotation.set(-stride * 0.35, 0, 0);
           if (lShin) lShin.rotation.set(Math.max(0, -stride) * 0.4, 0, 0);
           if (rShin) rShin.rotation.set(Math.max(0, stride) * 0.4, 0, 0);
-          if (lArm) lArm.rotation.set(-stride * 0.22, 0, 1.28);
-          if (rArm) rArm.rotation.set(stride * 0.22, 0, -1.28);
+          if (lArm) lArm.rotation.set(-stride * 0.20, 0, 1.38);
+          if (rArm) rArm.rotation.set(stride * 0.20, 0, -1.38);
         } else {
           const turnP = (p - 0.76) / 0.24;
           const easedTurn = turnP * turnP * (3 - 2 * turnP);
           avatarPivot.position.y = 0;
           avatarPivot.rotation.y = Math.PI * 0.46 * (1 - easedTurn);
-          applyStandingPose(time);
+          applyExpressiveBodyLanguage(time, delta);
         }
 
         if (p >= 1) {
@@ -640,23 +732,26 @@
           }
         }
       } else {
-        applyStandingPose(time);
+        if (isPlayingAudio && analyser) {
+          const samples = new Uint8Array(analyser.fftSize);
+          analyser.getByteTimeDomainData(samples);
+          let sum = 0;
+          for (let i = 0; i < samples.length; i++) { const n = (samples[i] - 128) / 128; sum += n * n; }
+          currentVoiceRms = Math.sqrt(sum / samples.length);
+          mouthTarget = currentVoiceRms > 0.015 ? Math.min(0.25, currentVoiceRms * 1.85) : 0;
+        } else {
+          currentVoiceRms = 0;
+          mouthTarget = 0;
+        }
+
+        applyExpressiveBodyLanguage(time, delta);
+
         const em = currentVrm.expressionManager;
         if (em) {
           if (time - lastBlink > nextBlink) {
             const bp = (time - lastBlink - nextBlink) / 0.14;
             if (bp <= 1) { try { em.setValue('blink', Math.sin(bp * Math.PI)); } catch {} }
-            else { try { em.setValue('blink', 0); } catch {} lastBlink = time; nextBlink = 2.4 + Math.random() * 3.2; }
-          }
-          if (isPlayingAudio && analyser) {
-            const samples = new Uint8Array(analyser.fftSize);
-            analyser.getByteTimeDomainData(samples);
-            let sum = 0;
-            for (let i = 0; i < samples.length; i++) { const n = (samples[i] - 128) / 128; sum += n * n; }
-            const rms = Math.sqrt(sum / samples.length);
-            mouthTarget = rms > 0.015 ? Math.min(0.25, rms * 1.85) : 0;
-          } else {
-            mouthTarget = 0;
+            else { try { em.setValue('blink', 0); } catch {} lastBlink = time; nextBlink = 2.2 + Math.random() * 3.0; }
           }
           const speed = mouthTarget > mouthLevel ? 0.55 : 0.35;
           mouthLevel += (mouthTarget - mouthLevel) * speed;
@@ -668,6 +763,9 @@
     renderer.render(scene, camera);
   }
 
+  // =========================================================================
+  // ZERO-DOUBLE-VOICE AUDIO ENGINE (GENERATION GUARDED)
+  // =========================================================================
   async function ensureAudioUnlocked() {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') await audioCtx.resume();
@@ -688,6 +786,16 @@
     return ok;
   }
 
+  function stopActiveAudioSource() {
+    audioPlaybackGen++;
+    if (audioSourceNode) {
+      try { audioSourceNode.onended = null; audioSourceNode.stop(0); audioSourceNode.disconnect(); } catch {}
+      audioSourceNode = null;
+    }
+    isPlayingAudio = false;
+    currentVoiceRms = 0;
+  }
+
   function playAudioBase64(b64, text = '', isFirst = false) {
     if (!b64) return;
     const bin = atob(b64);
@@ -700,16 +808,19 @@
   async function processAudioQueue() {
     if (!audioQueue.length) {
       isPlayingAudio = false;
+      currentVoiceRms = 0;
       if (activeCallType) setState('listening');
-      else if (wakeEnabled) { setState('idle'); setTimeout(startRecognition, 250); }
+      else if (wakeEnabled) { setState('idle'); setTimeout(startRecognition, 350); }
       else setState('idle');
       return;
     }
-    if (!(await ensureAudioUnlocked())) {
-      audioPrompt.style.display = 'block';
-      isPlayingAudio = false;
+
+    const myGen = ++audioPlaybackGen;
+    if (!(await ensureAudioUnlocked()) || myGen !== audioPlaybackGen) {
+      if (myGen === audioPlaybackGen) { audioPrompt.style.display = 'block'; isPlayingAudio = false; }
       return;
     }
+
     stopRecognition();
     isPlayingAudio = true;
     setState('speaking');
@@ -719,21 +830,35 @@
       liveSubtitle.innerText = activeSubtitleText;
       scrollDown(liveSubtitle);
     }
+
     audioCtx.decodeAudioData(item.bytes.buffer.slice(0), (buffer) => {
+      if (myGen !== audioPlaybackGen) return; // Discard stale decoded audio!
+      if (audioSourceNode) {
+        try { audioSourceNode.onended = null; audioSourceNode.stop(0); audioSourceNode.disconnect(); } catch {}
+      }
       audioSourceNode = audioCtx.createBufferSource();
       audioSourceNode.buffer = buffer;
       audioSourceNode.connect(analyser);
-      audioSourceNode.onended = () => { isPlayingAudio = false; audioSourceNode = null; processAudioQueue(); };
+      audioSourceNode.onended = () => {
+        if (myGen !== audioPlaybackGen) return;
+        isPlayingAudio = false;
+        audioSourceNode = null;
+        processAudioQueue();
+      };
       audioSourceNode.start(0);
-    }, () => { isPlayingAudio = false; processAudioQueue(); });
+    }, () => {
+      if (myGen !== audioPlaybackGen) return;
+      isPlayingAudio = false;
+      processAudioQueue();
+    });
   }
 
   function interruptSpeech() {
-    if (audioSourceNode) { try { audioSourceNode.stop(0); } catch {} audioSourceNode = null; }
-    audioQueue = []; isPlayingAudio = false;
+    stopActiveAudioSource();
+    audioQueue = [];
     setState('listening');
     if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'interrupt' }));
-    if (wakeEnabled && !activeCallType) setTimeout(startRecognition, 180);
+    if (wakeEnabled && !activeCallType) setTimeout(startRecognition, 200);
   }
 
   function initWebSocket() {
@@ -795,11 +920,12 @@
     const userThumb = pendingImageBase64;
     clearPendingImage();
 
+    stopActiveAudioSource();
+    audioQueue = [];
     activeJarvisBubble = null; activeSubtitleText = '';
     addChatBubble('user', clean, null, userThumb);
     setState('thinking');
     liveSubtitle.innerText = `Thinking: "${clean}"`;
-    if (isPlayingAudio || audioQueue.length) interruptSpeech();
     latestReqId = `req-${++requestSeq}`;
 
     const selectedLang = langMode.value === 'auto' ? null : langMode.value;
@@ -918,6 +1044,7 @@
     recognition.lang = langMode.value === 'ur' ? 'ur-PK' : 'en-US';
     recognition.onstart = () => { isRecognizing = true; setMicVisual(true); };
     recognition.onresult = (e) => {
+      if (isPlayingAudio) return;
       const t = e.results[0][0].transcript.trim();
       if (!t) return;
       if (wakeEnabled && !activeCallType) {
@@ -933,7 +1060,7 @@
     recognition.onerror = () => { isRecognizing = false; setMicVisual(false); };
     recognition.onend = () => {
       isRecognizing = false; setMicVisual(false);
-      if (wakeEnabled && !activeCallType && !isPlayingAudio) setTimeout(startRecognition, 400);
+      if (wakeEnabled && !activeCallType && !isPlayingAudio) setTimeout(startRecognition, 450);
     };
   }
   function startRecognition() {
@@ -1034,12 +1161,8 @@
       const d = await r.json();
       authToken = d.token || '';
       if (authToken) localStorage.setItem('jarvis_token', authToken);
-      isAuthed = true;
-      errEl.textContent = '';
-      authOverlay.style.display = 'none';
-      ensureAudioUnlocked();
-      initWebSocket();
-      refreshDashboard();
+      isAuthed = true; errEl.textContent = ''; authOverlay.style.display = 'none';
+      ensureAudioUnlocked(); initWebSocket(); refreshDashboard();
     } catch { errEl.textContent = 'Connection error.'; }
   }
 
@@ -1048,18 +1171,12 @@
       const r = await apiFetch('/api/auth/status');
       const d = await r.json();
       if (!d.auth_required || d.authenticated) {
-        isAuthed = true;
-        authOverlay.style.display = 'none';
-        initWebSocket();
-        refreshDashboard();
+        isAuthed = true; authOverlay.style.display = 'none';
+        initWebSocket(); refreshDashboard();
       } else {
-        isAuthed = false;
-        authOverlay.style.display = 'flex';
+        isAuthed = false; authOverlay.style.display = 'flex';
       }
-    } catch {
-      isAuthed = true;
-      initWebSocket();
-    }
+    } catch { isAuthed = true; initWebSocket(); }
   }
 
   document.getElementById('pin-submit-btn').onclick = submitPin;
