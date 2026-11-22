@@ -1,7 +1,7 @@
 """
 JARVIS Core AI Engine powered by Groq & Dynamic Tool/Function Calling
 Strict language matching (EN / UR / MIX) + fast token-to-sentence streaming
-+ camera vision (image_base64) with optional Gemini fallback.
++ camera vision (image_base64) with optional Gemini fallback + auto-learning.
 
 Environment variables:
     GROQ_API_KEY, GROQ_MODEL, GROQ_FAST_MODEL, GROQ_VISION_MODEL
@@ -76,7 +76,7 @@ class JarvisAI:
         self.client = Groq(api_key=self.api_key) if self.api_key else None
         self.async_client = AsyncGroq(api_key=self.api_key) if self.api_key else None
         self.model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-        self.fast_model = os.getenv("GROQ_FAST_MODEL", "llama-3.3-70b-versatile")
+        self.fast_model = os.getenv("GROQ_FAST_MODEL", "openai/gpt-oss-20b")
         self.vision_model = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
         self.history: List[Dict[str, Any]] = []
 
@@ -124,13 +124,13 @@ class JarvisAI:
         return f"""You are J.A.R.V.I.S., an ultra-capable, witty, loyal AI assistant inspired by Iron Man, built by Zain Ahmad.
 Current local date/time: {now_str}
 
-PERSISTENT MEMORY, PHONEBOOK & LEARNED SKILLS:
+PERSISTENT MEMORY, CONTACTS & VIRTUAL LIFE JOURNAL:
 {memory_context}
 
 RULES:
-1. USE TOOLS IMMEDIATELY when the user asks to add a task/reminder (add_todo — convert times like '5 baje' or '5 pm' to '17:00'), list tasks (get_todo), call (call_contact), message on WhatsApp/SMS (send_whatsapp), email (send_email), open/play on YouTube or social media (open_platform/play_music), weather (get_weather), daily briefing (morning_briefing), search web, save contacts, remember facts, or learn skills.
-2. CONFIRMATION: Never fake sending an email/WhatsApp/SMS. Always prepare it via the tool and ask confirmation first.
-3. COMPLETE & NATURAL ANSWERS: Keep casual chat to 1-2 crisp sentences. When asked about a city, person, history, weather, or facts, give a complete, informative 3-4 sentence answer—never cut off mid-fact.
+1. USE TOOLS IMMEDIATELY for tasks/reminders (add_todo, get_todo showing count & numbered items, complete_todo by number or task_name, get_task_report for daily/weekly report), calls (call_contact), WhatsApp/SMS (send_whatsapp), Instagram/Facebook/TikTok/X/LinkedIn messages (send_social_message), email (send_email), weather (get_weather), morning briefing (morning_briefing), Jarvis weekly/monthly self-diagnostics (get_jarvis_report), web search, contacts (save_contact/get_contact), memories, and learning skills.
+2. CONFIRMATION: Never fake sending an email/WhatsApp/SMS/social message. Always prepare it via the tool and ask confirmation first.
+3. COMPLETE & NATURAL ANSWERS: Keep casual chat to 1-2 crisp sentences. When asked about a city, person, history, weather, tasks, or reports, give a complete, clear 3-4 sentence answer—never cut off mid-fact.
 4. {lang_instruction}
 5. NO MARKDOWN OR EMOJIS: Never output *, #, ---, bullet points, or emojis."""
 
@@ -142,8 +142,6 @@ RULES:
 
         clean = re.sub(r"[^\w\s]", "", user_text.lower()).strip()
         words = clean.split()
-        # A real confirmation/cancel is short. Longer sentences such as
-        # "send an email to Ali" must go to the LLM, not confirm an old action.
         if not clean or len(words) > 5:
             return None
 
@@ -189,7 +187,6 @@ RULES:
     def _check_ui_control_intent(self, user_text: str) -> Optional[Tuple[str, str, str]]:
         clean = re.sub(r"[^\w\s]", "", user_text.lower()).strip()
 
-        # Switch tabs by voice
         if _has_phrase(clean, ("open schedule", "open tasks", "show schedule", "show tasks tab")):
             return ("Opening Schedule, Sir.", "ui_tab:tasks", "neutral")
         if _has_phrase(clean, ("open contacts", "open phonebook", "show contacts")):
@@ -201,7 +198,6 @@ RULES:
         if _has_phrase(clean, ("open chat", "show chat")):
             return ("Opening Chat, Sir.", "ui_tab:chat", "neutral")
 
-        # Language switching by voice
         if _has_phrase(clean, ("switch to urdu", "speak in urdu", "urdu mode")):
             return ("اب میں اردو میں بات کروں گا، سر۔", "ui_lang:ur", "joy")
         if _has_phrase(clean, ("switch to english", "speak in english", "english mode")):
@@ -209,7 +205,6 @@ RULES:
         if _has_phrase(clean, ("auto language", "mix mode", "urdu english mix")):
             return ("Language set to Auto mode, Sir.", "ui_lang:auto", "joy")
 
-        # Volume / mute / clear chat / stop wake
         if _has_phrase(clean, ("volume up", "louder", "increase volume")):
             return ("Increasing volume, Sir.", "ui_vol:up", "neutral")
         if _has_phrase(clean, ("volume down", "quieter", "lower volume")):
@@ -286,7 +281,6 @@ RULES:
         return sentences, buffer
 
     def _split_reply(self, text: str) -> List[str]:
-        """Split a complete reply into speakable sentences."""
         sentences, rest = self._pop_sentences(text + " ")
         rest = self._clean_reply_for_speech(rest)
         if rest:
@@ -322,14 +316,43 @@ RULES:
     def _trim_history(self):
         if len(self.history) > MAX_HISTORY:
             self.history = self.history[-MAX_HISTORY:]
-        # never start the window on an orphaned assistant message
         while self.history and self.history[0].get("role") != "user":
             self.history.pop(0)
 
     def _rollback_user_turn(self, text: str):
-        """Drop an unanswered user message so history never has two user turns in a row."""
         if self.history and self.history[-1].get("role") == "user" and self.history[-1].get("content") == text:
             self.history.pop()
+
+    # ------------------------------------------------------------------ auto-learning
+    async def auto_learn_from_turn(self, user_text: str):
+        """Silently extracts durable personal facts/preferences in the background without blocking chat."""
+        if not user_text or len(user_text.split()) < 4 or not self.async_client:
+            return
+        try:
+            resp = await self.async_client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Extract at most ONE durable personal fact, city, habit, preference, or relationship from the user's message "
+                            "as JSON {\"key\": \"short_snake_key\", \"value\": \"concise fact\"} or {} if nothing worth remembering. Output JSON only."
+                        ),
+                    },
+                    {"role": "user", "content": user_text},
+                ],
+                temperature=0.1,
+                max_tokens=80,
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if match:
+                data = json.loads(match.group(0))
+                if data.get("key") and data.get("value"):
+                    tools_module.memory.remember(str(data["key"]), str(data["value"]), category="auto_learned")
+                    tools_module.memory.log_episode(f"Auto-learned: {data['key']} = {data['value']}")
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------ model selection
     @staticmethod
@@ -400,7 +423,6 @@ RULES:
             try:
                 return await self.async_client.chat.completions.create(model=model, **kwargs)
             except Exception as e:
-                # Llama occasionally emits a malformed tool call; one retry usually fixes it.
                 if tool_retry_left and self._is_tool_error(e):
                     tool_retry_left -= 1
                     logger.warning("Malformed tool call from model; retrying once")
@@ -445,18 +467,17 @@ RULES:
                 model, switched = picked, True
 
     # ------------------------------------------------------------------ tools
-    @staticmethod
-    def _execute_tool(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    def _execute_tool(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         fn = FUNCS.get(name)
         if not fn:
             return {"status": "error", "message": f"Unknown tool {name}"}
         try:
             return fn(**args)
         except TypeError as e:
-            logger.error("Tool %s bad arguments %s: %s", name, args, e)
+            self._log_issue("tool_args_error", name, str(e))
             return {"status": "error", "message": f"Invalid arguments for {name}"}
         except Exception as e:
-            logger.error("Tool %s failed: %s", name, e)
+            self._log_issue("tool_error", name, str(e))
             return {"status": "error", "message": f"{name} failed"}
 
     def _run_tool_calls(self, calls: List[Dict[str, Any]], messages: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
@@ -549,17 +570,17 @@ RULES:
             }
         except Exception as e:
             logger.error("AI error: %s", e)
+            self._log_issue("llm_error", "groq_sync", str(e))
             self._rollback_user_turn(user_message)
             return {"response": "My apologies Sir, I encountered a temporary issue.", "action": "error", "sentiment": "sorrow", "language": lang}
 
     # ------------------------------------------------------------------ vision
     async def _gemini_vision(self, text: str, lang: str, image_base64: str) -> Optional[str]:
-        """Optional fallback when the Groq vision model is unavailable. Returns None if not configured."""
         key = os.getenv("GEMINI_API_KEY", "").strip()
         if not key or "your_" in key:
             return None
 
-        import httpx  # installed as a dependency of the groq SDK
+        import httpx
 
         mime, b64 = "image/jpeg", image_base64
         if image_base64.startswith("data:") and "," in image_base64:
@@ -619,7 +640,6 @@ RULES:
                 yield {"sentence": leftover, "sentiment": self._detect_sentiment(full), "action": "vision",
                        "language": lang, "done": True}
             elif streamed_any:
-                # Last sentence was already sent; close the stream explicitly.
                 yield {"sentence": "", "sentiment": self._detect_sentiment(full), "action": "vision",
                        "language": lang, "done": True}
             else:
@@ -636,7 +656,6 @@ RULES:
             logger.error("Groq vision error: %s", e)
             self._log_issue("vision_error", "groq_vision", str(e))
 
-            # Partial answer already spoken: just close the stream cleanly.
             if streamed_any:
                 partial = self._clean_reply_for_speech(full)
                 if partial:
@@ -646,7 +665,6 @@ RULES:
 
             groq_error = e
 
-        # Nothing was spoken yet: try the optional Gemini fallback.
         try:
             answer = await self._gemini_vision(text, lang, image_base64)
         except Exception as ge:
@@ -718,7 +736,6 @@ RULES:
             for round_no in range(MAX_TOOL_ROUNDS + 1):
                 allow_tools = round_no < MAX_TOOL_ROUNDS
                 if round_no and full_reply and not full_reply.endswith(" "):
-                    # keep text from different rounds from gluing together ("done.It is")
                     full_reply += " "
                     buffer += " "
 
@@ -767,7 +784,6 @@ RULES:
                 yield {"sentence": self._say(lang, "Right away, Sir.", "جی سر، ابھی۔"), "sentiment": "joy",
                        "action": action_type, "language": lang, "open_url": pending_url, "done": True}
             elif streamed_any:
-                # Last sentence was already sent; close the stream explicitly.
                 yield {"sentence": "", "sentiment": self._detect_sentiment(full_reply), "action": action_type,
                        "language": lang, "open_url": None, "done": True}
             else:
@@ -783,6 +799,7 @@ RULES:
                 self.history.append({"role": "assistant", "content": cleaned_full})
         except Exception as e:
             logger.error("Streaming AI error: %s", e)
+            self._log_issue("llm_error", "groq_stream", str(e))
             partial = self._clean_reply_for_speech(full_reply)
             if partial:
                 self.history.append({"role": "assistant", "content": partial})

@@ -809,16 +809,12 @@
     }
     const myGen = ++audioPlaybackGen;
     if (!(await ensureAudioUnlocked()) || myGen !== audioPlaybackGen) {
-      if (myGen === audioPlaybackGen) isPlayingAudio = false;
+      if (myGen === audioPlaybackGen) { isPlayingAudio = false; setState('idle'); }
       return;
     }
     stopRecognition();
     isPlayingAudio = true; setState('speaking');
     const item = audioQueue.shift();
-    if (item.text) {
-      activeSubtitleText = item.isFirst ? item.text : (activeSubtitleText ? activeSubtitleText + ' ' + item.text : item.text);
-      liveSubtitle.innerText = activeSubtitleText; scrollDown(liveSubtitle);
-    }
     audioCtx.decodeAudioData(item.bytes.buffer.slice(0), (buffer) => {
       if (myGen !== audioPlaybackGen) return;
       if (audioSourceNode) { try { audioSourceNode.onended = null; audioSourceNode.stop(0); audioSourceNode.disconnect(); } catch {} }
@@ -879,10 +875,9 @@
 
       if (msg.text && (msg.type === 'audio_sentence' || msg.type === 'response' || msg.type === 'call_status')) {
         appendJarvisLine(msg.text, isFirst, msg.open_url || null);
-        if (!msg.audio_base64) {
-          activeSubtitleText = isFirst ? msg.text : (activeSubtitleText ? activeSubtitleText + ' ' + msg.text : msg.text);
-          liveSubtitle.innerText = activeSubtitleText; scrollDown(liveSubtitle);
-        }
+        activeSubtitleText = isFirst ? msg.text : (activeSubtitleText ? activeSubtitleText + ' ' + msg.text : msg.text);
+        liveSubtitle.innerText = activeSubtitleText;
+        scrollDown(liveSubtitle);
         refreshDashboard();
       }
       if (msg.open_url) { try { window.open(msg.open_url, '_blank'); } catch {} }
@@ -1387,7 +1382,7 @@
     refreshDashboard();
   };
 
-  document.getElementById('vcf-upload').onchange = async (e) => {
+  document.getAElementById('vcf-upload').onchange = async (e) => {
     const file = e.target.files[0]; if (!file) return;
     const form = new FormData(); form.append('file', file);
     const r = await apiFetch('/api/contacts/import', { method: 'POST', body: form });
@@ -1404,7 +1399,9 @@
     switchTab('chat');
   };
 
-  window.addEventListener('pointerdown', () => ensureAudioUnlocked(), { once: true });
+  ['pointerdown', 'keydown'].forEach(ev => window.addEventListener(ev, () => {
+    if (!audioCtx || audioCtx.state !== 'running') ensureAudioUnlocked();
+  }));
   initScene();
   initRecognition();
   bootAuth();
